@@ -1,0 +1,6 @@
+{
+  "api_url": "https://app.bigeye.com",
+  "api_key": "your_api_key_here",
+  "workspace_id": 123456,
+  "debug": false
+}

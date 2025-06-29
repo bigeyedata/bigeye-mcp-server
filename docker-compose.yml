@@ -1,0 +1,70 @@
+version: '3.8'
+
+services:
+  bigeye-mcp:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: bigeye-mcp-server:latest
+    container_name: bigeye-mcp-server
+    
+    # MCP servers communicate via stdio, so we need to keep stdin open
+    stdin_open: true
+    tty: true
+    
+    environment:
+      # Required: Bigeye API configuration
+      - BIGEYE_API_KEY=${BIGEYE_API_KEY}
+      - BIGEYE_BASE_URL=${BIGEYE_BASE_URL:-https://app.bigeye.com}
+      - BIGEYE_WORKSPACE_ID=${BIGEYE_WORKSPACE_ID}
+      
+      # Optional: Debug mode
+      - BIGEYE_DEBUG=${BIGEYE_DEBUG:-false}
+      
+      # Python environment
+      - PYTHONUNBUFFERED=1
+      - PYTHONDONTWRITEBYTECODE=1
+    
+    volumes:
+      # Mount credentials directory for persistent authentication
+      - ${HOME}/.bigeye-mcp:/home/mcp/.bigeye-mcp
+      
+      # Optional: Mount config.json file if you prefer file-based configuration
+      # Uncomment the following line and ensure config.json exists in the same directory
+      # - ./config.json:/app/config.json:ro
+      
+      # Optional: Mount the entire project for development
+      # - .:/app:ro
+    
+    # Resource limits (adjust as needed)
+    mem_limit: 512m
+    cpus: '0.5'
+    
+    # Restart policy
+    restart: unless-stopped
+    
+    # Logging configuration
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  # Optional: Add a test service that connects to the MCP server
+  # This demonstrates how another service might interact with the MCP server
+  test-client:
+    image: python:3.12-slim
+    container_name: bigeye-mcp-test-client
+    profiles:
+      - test
+    depends_on:
+      - bigeye-mcp
+    stdin_open: true
+    tty: true
+    command: |
+      sh -c "pip install mcp && python -c 'import sys; print(\"Test client ready. Use docker-compose run test-client to interact with the MCP server.\")' && tail -f /dev/null"
+    
+# Networks
+networks:
+  default:
+    name: bigeye-mcp-network

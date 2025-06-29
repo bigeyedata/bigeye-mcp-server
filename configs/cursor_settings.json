@@ -1,0 +1,61 @@
+{
+  "mcpServers": {
+    "bigeye": {
+      "type": "stdio",
+      "command": "docker",
+      "args": [
+        "run",
+        "--rm",
+        "-i",
+        "--env", "BIGEYE_API_KEY",
+        "--env", "BIGEYE_API_URL",
+        "--env", "BIGEYE_WORKSPACE_ID",
+        "--env", "BIGEYE_DEBUG",
+        "bigeye-mcp-server:latest",
+        "python",
+        "server.py"
+      ],
+      "env": {
+        "BIGEYE_API_KEY": "${env:BIGEYE_API_KEY}",
+        "BIGEYE_API_URL": "${env:BIGEYE_API_URL}",
+        "BIGEYE_WORKSPACE_ID": "${env:BIGEYE_WORKSPACE_ID}",
+        "BIGEYE_DEBUG": "${env:BIGEYE_DEBUG}"
+      },
+      "description": "Bigeye MCP Server for data quality monitoring",
+      "capabilities": {
+        "tools": true,
+        "resources": true,
+        "prompts": true
+      }
+    },
+    "bigeye-envfile": {
+      "type": "stdio",
+      "command": "docker",
+      "args": [
+        "run",
+        "--rm",
+        "-i",
+        "--env-file", "${workspaceFolder}/.env",
+        "bigeye-mcp-server:latest",
+        "python",
+        "server.py"
+      ],
+      "description": "Bigeye MCP Server using workspace .env file"
+    },
+    "bigeye-dev": {
+      "type": "stdio",
+      "command": "docker",
+      "args": [
+        "run",
+        "--rm",
+        "-i",
+        "--env-file", "${workspaceFolder}/.env",
+        "-v", "${workspaceFolder}:/app:ro",
+        "bigeye-mcp-server:latest",
+        "python",
+        "server.py"
+      ],
+      "description": "Bigeye MCP Server in development mode with mounted source"
+    }
+  }
+}

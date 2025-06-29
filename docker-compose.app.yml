@@ -1,0 +1,15 @@
+version: '3.8'
+
+services:
+  bigeye-mcp-app:
+    extends:
+      file: docker-compose.yml
+      service: bigeye-mcp
+    container_name: bigeye-mcp-server-app
+    environment:
+      - BIGEYE_API_KEY=${BIGEYE_APP_API_KEY}
+      - BIGEYE_BASE_URL=https://app.bigeye.com
+      - BIGEYE_WORKSPACE_ID=${BIGEYE_APP_WORKSPACE_ID}
+      - BIGEYE_DEBUG=${BIGEYE_DEBUG:-false}
+      - PYTHONUNBUFFERED=1
+      - PYTHONDONTWRITEBYTECODE=1

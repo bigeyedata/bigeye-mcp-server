@@ -1,0 +1,15 @@
+version: '3.8'
+
+services:
+  bigeye-mcp-demo:
+    extends:
+      file: docker-compose.yml
+      service: bigeye-mcp
+    container_name: bigeye-mcp-server-demo
+    environment:
+      - BIGEYE_API_KEY=${BIGEYE_DEMO_API_KEY}
+      - BIGEYE_BASE_URL=https://demo.bigeye.com
+      - BIGEYE_WORKSPACE_ID=${BIGEYE_DEMO_WORKSPACE_ID}
+      - BIGEYE_DEBUG=${BIGEYE_DEBUG:-false}
+      - PYTHONUNBUFFERED=1
+      - PYTHONDONTWRITEBYTECODE=1

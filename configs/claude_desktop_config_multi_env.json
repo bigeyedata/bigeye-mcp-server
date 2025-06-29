@@ -1,0 +1,92 @@
+{
+  "mcpServers": {
+    "bigeye-auth": {
+      "command": "docker",
+      "args": [
+        "run",
+        "--rm",
+        "-i",
+        "-v", "${HOME}/.bigeye-mcp:/home/mcp/.bigeye-mcp",
+        "--env", "BIGEYE_DEBUG=${BIGEYE_DEBUG:-false}",
+        "bigeye-mcp-server:latest",
+        "python",
+        "server.py"
+      ],
+      "env": {
+        "BIGEYE_DEBUG": "false"
+      }
+    },
+    "bigeye-demo": {
+      "command": "docker",
+      "args": [
+        "run",
+        "--rm",
+        "-i",
+        "-v", "${HOME}/.bigeye-mcp:/home/mcp/.bigeye-mcp",
+        "--env", "BIGEYE_API_KEY=${BIGEYE_API_KEY}",
+        "--env", "BIGEYE_BASE_URL=${BIGEYE_BASE_URL}",
+        "--env", "BIGEYE_WORKSPACE_ID=${BIGEYE_WORKSPACE_ID}",
+        "--env", "BIGEYE_DEBUG=${BIGEYE_DEBUG:-false}",
+        "bigeye-mcp-server:latest",
+        "python",
+        "server.py"
+      ],
+      "env": {
+        "BIGEYE_API_KEY": "your_demo_api_key_here",
+        "BIGEYE_BASE_URL": "https://demo.bigeye.com",
+        "BIGEYE_WORKSPACE_ID": "your_demo_workspace_id_here",
+        "BIGEYE_DEBUG": "false"
+      }
+    },
+    "bigeye-app": {
+      "command": "docker",
+      "args": [
+        "run",
+        "--rm",
+        "-i",
+        "-v", "${HOME}/.bigeye-mcp:/home/mcp/.bigeye-mcp",
+        "--env", "BIGEYE_API_KEY=${BIGEYE_API_KEY}",
+        "--env", "BIGEYE_BASE_URL=${BIGEYE_BASE_URL}",
+        "--env", "BIGEYE_WORKSPACE_ID=${BIGEYE_WORKSPACE_ID}",
+        "--env", "BIGEYE_DEBUG=${BIGEYE_DEBUG:-false}",
+        "bigeye-mcp-server:latest",
+        "python",
+        "server.py"
+      ],
+      "env": {
+        "BIGEYE_API_KEY": "your_app_api_key_here",
+        "BIGEYE_BASE_URL": "https://app.bigeye.com",
+        "BIGEYE_WORKSPACE_ID": "your_app_workspace_id_here",
+        "BIGEYE_DEBUG": "false"
+      }
+    },
+    "bigeye-demo-compose": {
+      "command": "docker-compose",
+      "args": [
+        "-f", "/path/to/bigeye_mcp_server/docker-compose.yml",
+        "-f", "/path/to/bigeye_mcp_server/docker-compose.demo.yml",
+        "--env-file", "/path/to/bigeye_mcp_server/.env.demo",
+        "run",
+        "--rm",
+        "-T",
+        "bigeye-mcp-demo",
+        "python",
+        "server.py"
+      ]
+    },
+    "bigeye-app-compose": {
+      "command": "docker-compose",
+      "args": [
+        "-f", "/path/to/bigeye_mcp_server/docker-compose.yml",
+        "-f", "/path/to/bigeye_mcp_server/docker-compose.app.yml",
+        "--env-file", "/path/to/bigeye_mcp_server/.env.app",
+        "run",
+        "--rm",
+        "-T",
+        "bigeye-mcp-app",
+        "python",
+        "server.py"
+      ]
+    }
+  }
+}
