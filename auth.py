@@ -286,10 +286,14 @@ class BigeyeAuthClient:
             )
             if response.status_code == 200:
                 try:
-                    workspaces = response.json()
-                    # Ensure we have a list
-                    if not isinstance(workspaces, list):
-                        print(f"[BIGEYE AUTH DEBUG] Unexpected workspaces format: {type(workspaces)}")
+                    data = response.json()
+                    # Handle both formats: direct list or {"workspaces": [...]}
+                    if isinstance(data, dict) and 'workspaces' in data:
+                        workspaces = data['workspaces']
+                    elif isinstance(data, list):
+                        workspaces = data
+                    else:
+                        print(f"[BIGEYE AUTH DEBUG] Unexpected response format: {type(data)}")
                         return []
                     return workspaces
                 except Exception as e:
