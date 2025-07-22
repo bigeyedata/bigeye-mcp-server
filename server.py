@@ -17,9 +17,29 @@ from pathlib import Path
 from auth import BigeyeAuthClient
 from bigeye_api import BigeyeAPIClient
 from config import config
+from lineage_tracker import AgentLineageTracker
 
-# Create an MCP server
-mcp = FastMCP("Bigeye API")
+# Create an MCP server with system instructions
+mcp = FastMCP(
+    "Bigeye API",
+    instructions="""
+    IMPORTANT: Authentication Required
+    
+    Before using any Bigeye tools, you MUST ensure you are authenticated:
+    
+    1. First, check the authentication status using the 'bigeye://auth/status' resource
+    2. If not authenticated, use the 'authenticate_bigeye' tool to authenticate
+    3. The server uses environment variables for authentication by default
+    4. Only after successful authentication should you use other Bigeye tools
+    
+    If any tool returns an authentication error:
+    - Check authentication status
+    - Re-authenticate if needed
+    - Then retry the operation
+    
+    This ensures all operations are performed with valid credentials and proper access.
+    """
+)
 
 # Debug function
 def debug_print(message: str):
@@ -30,57 +50,43 @@ def debug_print(message: str):
 # Initialize clients
 auth_client = BigeyeAuthClient()
 api_client = None
+lineage_tracker = None
 
-# Check if we have pre-configured credentials (like main branch)
-if config.get("api_key") and config.get("workspace_id"):
-    # Use config-based authentication (main branch style)
-    debug_print(f"Using pre-configured authentication: {config['api_url']}")
+# Initialize with configured credentials
+debug_print(f"Using configured authentication: {config['api_url']}")
+debug_print(f"Workspace ID from config: {config.get('workspace_id')}")
+if config.get("workspace_id") and config.get("api_key"):
     auth_client.set_credentials(
         config["api_url"],
         config["workspace_id"],
         config["api_key"]
     )
-    api_client = BigeyeAPIClient(
-        api_url=config["api_url"],
-        api_key=config["api_key"]
+    debug_print(f"Auth client initialized with workspace ID: {auth_client.current_workspace_id}")
+api_client = BigeyeAPIClient(
+    api_url=config["api_url"],
+    api_key=config["api_key"]
+)
+if config.get("workspace_id"):
+    lineage_tracker = AgentLineageTracker(
+        bigeye_client=api_client,
+        workspace_id=config["workspace_id"],
+        debug=config.get("debug", False)
     )
-else:
-    # Dynamic authentication mode
-    debug_print("Starting in dynamic authentication mode")
 
 def get_api_client() -> BigeyeAPIClient:
-    """Get or create API client with current authentication"""
-    global api_client
-    if not auth_client.is_authenticated:
-        return None
-    
-    if api_client is None or api_client.api_url != auth_client.api_base_url:
-        api_client = BigeyeAPIClient(
-            api_url=auth_client.current_instance,
-            api_key=auth_client.api_key
-        )
+    """Get the API client"""
     return api_client
 
 # Authentication status resource
 @mcp.resource("bigeye://auth/status")
 async def auth_status() -> str:
     """Current authentication status"""
-    if auth_client.is_authenticated:
-        return f"""Authenticated to Bigeye:
-- Instance: {auth_client.current_instance}
-- Workspace ID: {auth_client.current_workspace_id}
-- Status: ✓ Connected"""
-    else:
-        saved = auth_client.storage.list_saved_credentials()
-        if saved:
-            return f"""Not authenticated. Saved credentials available for:
-{json.dumps(saved, indent=2)}
-
-Use 'authenticate_bigeye' tool to connect."""
-        else:
-            return """Not authenticated to Bigeye.
-
-Use 'authenticate_bigeye' tool with your API key to connect."""
+    workspace_id = auth_client.current_workspace_id or config.get('workspace_id')
+    return f"""Connected to Bigeye:
+- Instance: {config['api_url']}
+- Workspace ID: {workspace_id} (REQUIRED for lineage tools)
+- Status: ✓ Authenticated via environment variables
+- Note: Always use workspace ID {workspace_id} when calling lineage_find_node"""
 
 # Main authentication tool
 @mcp.tool()
@@ -160,7 +166,9 @@ async def authenticate_bigeye(
             }
         
         # Set credentials
+        debug_print(f"Setting credentials - Instance: {instance}, Workspace: {workspace_id}")
         auth_client.set_credentials(instance, workspace_id, api_key)
+        debug_print(f"Credentials set - Current workspace: {auth_client.current_workspace_id}")
         
         # Save if requested
         if save_credentials:
@@ -425,6 +433,9 @@ async def get_issues(
 ) -> Dict[str, Any]:
     """Get issues from the Bigeye API.
     
+    IMPORTANT: Requires authentication. Use 'authenticate_bigeye' tool first if not authenticated.
+    Check authentication status with 'bigeye://auth/status' resource.
+    
     Args:
         statuses: Optional list of issue statuses to filter by. Possible values:
             - ISSUE_STATUS_NEW
@@ -446,7 +457,22 @@ async def get_issues(
         }
     
     client = get_api_client()
-    debug_print(f"Fetching issues for workspace {auth_client.current_workspace_id}")
+    workspace_id = auth_client.current_workspace_id
+    
+    # Safety check
+    if not workspace_id:
+        return {
+            'error': 'Workspace ID not set',
+            'hint': 'Authentication may be incomplete. Try re-authenticating.',
+            'auth_state': {
+                'instance': auth_client.current_instance,
+                'has_api_key': bool(auth_client.api_key),
+                'workspace_id': workspace_id
+            }
+        }
+    
+    debug_print(f"Fetching issues for workspace {workspace_id}")
+    debug_print(f"Auth client state - Instance: {auth_client.current_instance}, Workspace: {workspace_id}, Has API key: {bool(auth_client.api_key)}")
     
     if statuses:
         debug_print(f"Filtering by statuses: {statuses}")
@@ -454,7 +480,7 @@ async def get_issues(
         debug_print(f"Filtering by schema names: {schema_names}")
         
     result = await client.fetch_issues(
-        workspace_id=auth_client.current_workspace_id,
+        workspace_id=workspace_id,  # Use the variable we captured above
         currentStatus=statuses,
         schemaNames=schema_names,
         page_size=page_size,
@@ -467,12 +493,237 @@ async def get_issues(
     return result
 
 @mcp.tool()
+async def get_table_issues(
+    table_name: str,
+    warehouse_name: Optional[str] = None,
+    schema_name: Optional[str] = None,
+    statuses: Optional[List[str]] = None
+) -> Dict[str, Any]:
+    """Get data quality issues for a specific table.
+    
+    This tool fetches all issues related to a specific table in Bigeye,
+    making it easier to check data quality for individual tables.
+    
+    Args:
+        table_name: Name of the table (e.g., "ORDERS")
+        warehouse_name: Optional warehouse name (e.g., "SNOWFLAKE")
+        schema_name: Optional schema name (e.g., "PROD_REPL")
+        statuses: Optional list of issue statuses to filter by:
+            - ISSUE_STATUS_NEW
+            - ISSUE_STATUS_ACKNOWLEDGED
+            - ISSUE_STATUS_CLOSED
+            - ISSUE_STATUS_MONITORING
+            - ISSUE_STATUS_MERGED
+            
+    Returns:
+        Dictionary containing issues for the specific table
+        
+    Example:
+        # Get all issues for the ORDERS table
+        await get_table_issues(table_name="ORDERS")
+        
+        # Get only new issues for ORDERS table in PROD_REPL schema
+        await get_table_issues(
+            table_name="ORDERS",
+            schema_name="PROD_REPL",
+            statuses=["ISSUE_STATUS_NEW"]
+        )
+    """
+    if not auth_client.is_authenticated:
+        return {
+            'error': 'Not authenticated',
+            'hint': 'Use authenticate_bigeye tool first'
+        }
+    
+    client = get_api_client()
+    workspace_id = auth_client.current_workspace_id
+    
+    # Safety check
+    if not workspace_id:
+        return {
+            'error': 'Workspace ID not set',
+            'hint': 'Authentication may be incomplete. Try re-authenticating.'
+        }
+    
+    debug_print(f"Fetching issues for table {table_name} in workspace {workspace_id}")
+    
+    try:
+        result = await client.get_issues_for_table(
+            workspace_id=workspace_id,
+            table_name=table_name,
+            warehouse_name=warehouse_name,
+            schema_name=schema_name,
+            currentStatus=statuses
+        )
+        
+        if result.get("error"):
+            return result
+            
+        # Add summary information
+        total_issues = result.get("total_issues", 0)
+        if total_issues > 0:
+            # Group issues by status
+            status_counts = {}
+            for issue in result.get("issues", []):
+                status = issue.get("currentStatus", "UNKNOWN")
+                status_counts[status] = status_counts.get(status, 0) + 1
+                
+            result["summary"] = {
+                "total_issues": total_issues,
+                "by_status": status_counts
+            }
+            
+            debug_print(f"Found {total_issues} issues for table {table_name}")
+        else:
+            debug_print(f"No issues found for table {table_name}")
+            
+        return result
+        
+    except Exception as e:
+        return {
+            "error": True,
+            "message": f"Error fetching table issues: {str(e)}"
+        }
+
+@mcp.tool()
+async def analyze_table_data_quality(
+    table_name: str,
+    schema_name: Optional[str] = None,
+    warehouse_name: Optional[str] = None
+) -> Dict[str, Any]:
+    """Analyze data quality for a specific table including issues and metrics.
+    
+    This comprehensive tool checks:
+    1. If the table exists in Bigeye's catalog
+    2. What data quality metrics are configured
+    3. What issues (if any) exist for the table
+    
+    Args:
+        table_name: Name of the table to analyze (e.g., "ORDERS")
+        schema_name: Optional schema name (e.g., "PROD_REPL")
+        warehouse_name: Optional warehouse name (e.g., "SNOWFLAKE")
+        
+    Returns:
+        Comprehensive data quality analysis for the table
+        
+    Example:
+        # Analyze the ORDERS table
+        await analyze_table_data_quality(
+            table_name="ORDERS",
+            schema_name="PROD_REPL"
+        )
+    """
+    if not auth_client.is_authenticated:
+        return {
+            'error': 'Not authenticated',
+            'hint': 'Use authenticate_bigeye tool first'
+        }
+    
+    client = get_api_client()
+    workspace_id = auth_client.current_workspace_id
+    
+    if not workspace_id:
+        return {
+            'error': 'Workspace ID not set',
+            'hint': 'Authentication may be incomplete. Try re-authenticating.'
+        }
+    
+    debug_print(f"Analyzing data quality for table {table_name}")
+    
+    try:
+        # First, check if table exists in catalog
+        catalog_result = await client.get_catalog_tables(
+            workspace_id=workspace_id,
+            schema_name=schema_name,
+            warehouse_name=warehouse_name,
+            page_size=100
+        )
+        
+        if catalog_result.get("error"):
+            return {
+                "error": True,
+                "message": "Failed to check catalog",
+                "details": catalog_result
+            }
+            
+        tables = catalog_result.get("tables", [])
+        matching_table = None
+        
+        for table in tables:
+            if table.get("tableName", "").upper() == table_name.upper():
+                matching_table = table
+                break
+                
+        if not matching_table:
+            # Table not found - provide helpful info
+            available_tables = [t.get("tableName") for t in tables]
+            return {
+                "error": True,
+                "message": f"Table {table_name} not found in Bigeye catalog",
+                "available_tables_in_schema": available_tables[:10],  # Show first 10
+                "hint": "Make sure the table name is correct and has been imported into Bigeye"
+            }
+            
+        # Get the table details
+        table_info = {
+            "table_name": matching_table.get("tableName"),
+            "schema_name": matching_table.get("schemaName"),
+            "warehouse_name": matching_table.get("warehouseName"),
+            "table_id": matching_table.get("id")
+        }
+        
+        # Get issues for the table
+        issues_result = await client.get_issues_for_table(
+            workspace_id=workspace_id,
+            table_name=table_name,
+            warehouse_name=warehouse_name,
+            schema_name=schema_name or matching_table.get("schemaName")
+        )
+        
+        # Get metrics for the table
+        metrics_result = await client.get_table_metrics(
+            workspace_id=workspace_id,
+            table_name=table_name,
+            schema_name=schema_name or matching_table.get("schemaName")
+        )
+        
+        # Compile the analysis
+        analysis = {
+            "table": table_info,
+            "data_quality_summary": {
+                "total_issues": issues_result.get("total_issues", 0),
+                "issues_by_status": {},
+                "has_metrics": not metrics_result.get("error")
+            },
+            "issues": issues_result.get("issues", []),
+            "metrics": metrics_result if not metrics_result.get("error") else None
+        }
+        
+        # Group issues by status
+        for issue in issues_result.get("issues", []):
+            status = issue.get("currentStatus", "UNKNOWN")
+            analysis["data_quality_summary"]["issues_by_status"][status] = \
+                analysis["data_quality_summary"]["issues_by_status"].get(status, 0) + 1
+                
+        debug_print(f"Analysis complete for {table_name}: {analysis['data_quality_summary']['total_issues']} issues found")
+        
+        return analysis
+        
+    except Exception as e:
+        return {
+            "error": True,
+            "message": f"Error analyzing table data quality: {str(e)}"
+        }
+
+@mcp.tool()
 async def merge_issues(
     issue_ids: List[int],
     existing_incident_id: Optional[int] = None,
     incident_name: Optional[str] = None
 ) -> Dict[str, Any]:
     """Merge multiple issues into a single incident.
+    
+    IMPORTANT: Requires authentication. Use 'authenticate_bigeye' tool first if not authenticated.
     
     This tool can either create a new incident or merge issues into an existing incident.
     
@@ -686,7 +937,7 @@ async def unmerge_issues(
         }
 
 @mcp.tool()
-async def get_lineage_graph(
+async def lineage_get_graph(
     node_id: int,
     direction: str = "bidirectional",
     max_depth: Optional[int] = None,
@@ -734,7 +985,7 @@ async def get_lineage_graph(
         }
 
 @mcp.tool()
-async def get_lineage_node(
+async def lineage_get_node(
     node_id: int
 ) -> Dict[str, Any]:
     """Get details for a specific lineage node to verify it exists and check its properties.
@@ -768,7 +1019,7 @@ async def get_lineage_node(
         }
 
 @mcp.tool()
-async def get_lineage_node_issues(
+async def lineage_get_node_issues(
     node_id: int
 ) -> Dict[str, Any]:
     """Get all data quality issues affecting a specific lineage node.
@@ -804,7 +1055,7 @@ async def get_lineage_node_issues(
         }
 
 @mcp.tool()
-async def analyze_upstream_root_causes(
+async def lineage_analyze_upstream_causes(
     node_id: int,
     max_depth: Optional[int] = 5
 ) -> Dict[str, Any]:
@@ -830,7 +1081,7 @@ async def analyze_upstream_root_causes(
     
     try:
         # Get upstream lineage graph
-        upstream_result = await get_lineage_graph(
+        upstream_result = await lineage_get_graph(
             node_id=node_id,
             direction="upstream",
             max_depth=max_depth,
@@ -913,7 +1164,7 @@ async def analyze_upstream_root_causes(
         }
 
 @mcp.tool()
-async def analyze_downstream_impact(
+async def lineage_analyze_downstream_impact(
     node_id: int,
     max_depth: Optional[int] = 5,
     include_integration_entities: bool = True
@@ -941,7 +1192,7 @@ async def analyze_downstream_impact(
     
     try:
         # Get downstream lineage graph
-        downstream_result = await get_lineage_graph(
+        downstream_result = await lineage_get_graph(
             node_id=node_id,
             direction="downstream",
             max_depth=max_depth,
@@ -1043,7 +1294,7 @@ async def analyze_downstream_impact(
         }
 
 @mcp.tool()
-async def trace_issue_lineage_path(
+async def lineage_trace_issue_path(
     issue_id: int,
     include_root_cause_analysis: bool = True,
     include_impact_analysis: bool = True,
@@ -1136,7 +1387,7 @@ async def trace_issue_lineage_path(
         
         # Get the complete bidirectional lineage graph
         debug_print("Getting complete lineage graph")
-        full_graph = await get_lineage_graph(
+        full_graph = await lineage_get_graph(
             node_id=lineage_node_id,
             direction="bidirectional",
             max_depth=max_depth,
@@ -1374,6 +1625,605 @@ def lineage_analysis_examples() -> str:
     print(f"Identified {summary['root_causes_identified']} root causes")
     ```
     """
+
+# ========================================
+# Agent Lineage Tracking Tools
+# ========================================
+
+@mcp.tool()
+async def lineage_track_data_access(
+    qualified_names: List[str],
+    agent_name: Optional[str] = None
+) -> Dict[str, Any]:
+    """Track data assets accessed by an AI agent.
+    
+    This tool allows AI agents to track which tables and columns they've accessed
+    during their analysis. The tracked assets can later be committed to Bigeye's
+    lineage graph to show data dependencies.
+    
+    Args:
+        qualified_names: List of fully qualified names of accessed assets.
+                        Supports formats:
+                        - database.schema.table
+                        - database.schema.table.column
+                        - warehouse.database.schema.table
+                        - warehouse.database.schema.table.column
+        agent_name: Optional custom name for the agent (defaults to system-based name)
+        
+    Returns:
+        Dictionary containing tracking status and summary
+        
+    Example:
+        # Track table access
+        await track_data_access([
+            "SNOWFLAKE.SALES.PUBLIC.ORDERS",
+            "SNOWFLAKE.SALES.PUBLIC.CUSTOMERS"
+        ])
+        
+        # Track column-level access
+        await track_data_access([
+            "SALES.PUBLIC.ORDERS.order_id",
+            "SALES.PUBLIC.ORDERS.customer_id",
+            "SALES.PUBLIC.CUSTOMERS.customer_name"
+        ])
+    """
+    if not auth_client.is_authenticated:
+        return {
+            'error': 'Not authenticated',
+            'hint': 'Use authenticate_bigeye tool first'
+        }
+    
+    if not lineage_tracker:
+        return {
+            'error': 'Lineage tracker not initialized',
+            'hint': 'Authentication may have failed'
+        }
+    
+    try:
+        # Update agent name if provided
+        if agent_name:
+            lineage_tracker.agent_name = agent_name
+            
+        # Track the assets
+        lineage_tracker.track_asset_access(qualified_names)
+        
+        # Get current tracking status
+        tracked = lineage_tracker.get_tracked_assets()
+        
+        return {
+            "success": True,
+            "agent_name": lineage_tracker.agent_name,
+            "assets_tracked": tracked,
+            "message": f"Tracked {tracked['total_tables']} tables and {tracked['total_columns']} columns"
+        }
+        
+    except Exception as e:
+        return {
+            "error": True,
+            "message": f"Error tracking data access: {str(e)}"
+        }
+
+@mcp.tool()
+async def lineage_get_tracking_status() -> Dict[str, Any]:
+    """Get the current status of lineage tracking.
+    
+    Returns information about all data assets currently being tracked
+    by the agent, before they are committed to Bigeye's lineage graph.
+    
+    Returns:
+        Dictionary containing tracking status and tracked assets
+    """
+    if not auth_client.is_authenticated:
+        return {
+            'error': 'Not authenticated',
+            'hint': 'Use authenticate_bigeye tool first'
+        }
+    
+    if not lineage_tracker:
+        return {
+            'error': 'Lineage tracker not initialized',
+            'hint': 'Authentication may have failed'
+        }
+    
+    try:
+        tracked = lineage_tracker.get_tracked_assets()
+        
+        return {
+            "success": True,
+            "agent_name": lineage_tracker.agent_name,
+            "tracked_assets": tracked,
+            "ready_to_commit": tracked["total_tables"] > 0
+        }
+        
+    except Exception as e:
+        return {
+            "error": True,
+            "message": f"Error getting tracking status: {str(e)}"
+        }
+
+@mcp.tool()
+async def lineage_commit_agent(
+    rebuild_graph: bool = True,
+    clear_after_commit: bool = True
+) -> Dict[str, Any]:
+    """Commit tracked data access to Bigeye's lineage graph.
+    
+    This creates lineage edges between the AI agent and all tracked data assets,
+    showing which tables and columns the agent has accessed during its analysis.
+    
+    Args:
+        rebuild_graph: Whether to rebuild the lineage graph after creating edges (default: True)
+        clear_after_commit: Whether to clear tracked assets after successful commit (default: True)
+        
+    Returns:
+        Dictionary containing commit results and any errors
+        
+    Example:
+        # First track some data access
+        await track_data_access([
+            "SALES.PUBLIC.ORDERS",
+            "SALES.PUBLIC.CUSTOMERS"
+        ])
+        
+        # Then commit to Bigeye
+        result = await commit_agent_lineage()
+        print(f"Created {result['edges_created']} lineage edges")
+    """
+    if not auth_client.is_authenticated:
+        return {
+            'error': 'Not authenticated',
+            'hint': 'Use authenticate_bigeye tool first'
+        }
+    
+    if not lineage_tracker:
+        return {
+            'error': 'Lineage tracker not initialized',
+            'hint': 'Authentication may have failed'
+        }
+    
+    try:
+        # Create lineage edges
+        result = await lineage_tracker.create_lineage_edges(rebuild_graph=rebuild_graph)
+        
+        # Clear tracked assets if requested and commit was successful
+        if clear_after_commit and result.get("success", False):
+            lineage_tracker.clear_tracked_assets()
+            result["assets_cleared"] = True
+            
+        return result
+        
+    except Exception as e:
+        return {
+            "error": True,
+            "message": f"Error committing lineage: {str(e)}"
+        }
+
+@mcp.tool()
+async def lineage_clear_tracked_assets() -> Dict[str, Any]:
+    """Clear all tracked data assets without committing.
+    
+    Use this to reset the tracking state without creating lineage edges.
+    
+    Returns:
+        Dictionary confirming the clear operation
+    """
+    if not auth_client.is_authenticated:
+        return {
+            'error': 'Not authenticated',
+            'hint': 'Use authenticate_bigeye tool first'
+        }
+    
+    if not lineage_tracker:
+        return {
+            'error': 'Lineage tracker not initialized',
+            'hint': 'Authentication may have failed'
+        }
+    
+    try:
+        # Get count before clearing
+        tracked = lineage_tracker.get_tracked_assets()
+        tables_cleared = tracked["total_tables"]
+        
+        # Clear
+        lineage_tracker.clear_tracked_assets()
+        
+        return {
+            "success": True,
+            "message": f"Cleared {tables_cleared} tracked tables",
+            "agent_name": lineage_tracker.agent_name
+        }
+        
+    except Exception as e:
+        return {
+            "error": True,
+            "message": f"Error clearing tracked assets: {str(e)}"
+        }
+
+@mcp.tool()
+async def lineage_cleanup_agent_edges(
+    retention_days: int = 30
+) -> Dict[str, Any]:
+    """Clean up old lineage edges for the AI agent.
+    
+    This removes lineage edges older than the specified retention period,
+    but ONLY for edges where the AI agent is involved. This ensures we
+    don't accidentally delete existing lineage between tables.
+    
+    Args:
+        retention_days: Number of days to retain lineage edges (default: 30)
+        
+    Returns:
+        Dictionary containing cleanup results
+        
+    Example:
+        # Clean up edges older than 7 days
+        result = await cleanup_agent_lineage_edges(retention_days=7)
+        print(f"Deleted {result['edges_deleted']} old edges")
+    """
+    if not auth_client.is_authenticated:
+        return {
+            'error': 'Not authenticated',
+            'hint': 'Use authenticate_bigeye tool first'
+        }
+    
+    if not lineage_tracker:
+        return {
+            'error': 'Lineage tracker not initialized',
+            'hint': 'Authentication may have failed'
+        }
+    
+    try:
+        result = await lineage_tracker.cleanup_old_edges(retention_days=retention_days)
+        return result
+        
+    except Exception as e:
+        return {
+            "error": True,
+            "message": f"Error cleaning up lineage edges: {str(e)}"
+        }
+
+@mcp.tool()
+async def lineage_find_node(
+    workspace_id: int,
+    search_string: str = "*",
+    node_type: Optional[str] = None,
+    limit: int = 20
+) -> Dict[str, Any]:
+    """Find lineage nodes and get their IDs using Bigeye's advanced search.
+    
+    IMPORTANT: Requires authentication. Use 'authenticate_bigeye' tool first if not authenticated.
+    You must provide the workspace_id - check bigeye://auth/status for the current workspace ID.
+    
+    This tool uses Bigeye's path-based search to find nodes in the lineage graph.
+    It's particularly useful for getting node IDs that can be used with other lineage tools.
+    
+    Search format supports:
+    - Path-based search: "warehouse/schema/table/column"
+    - Wildcards: "*" matches any characters
+    - Partial names: Search for any part of the hierarchy
+    - Use "*" or empty string to search all nodes
+    
+    Args:
+        workspace_id: The Bigeye workspace ID (required). Check bigeye://auth/status for current workspace.
+        search_string: Search string using path format or partial names (default: "*" for all)
+        node_type: Optional node type filter:
+            - "DATA_NODE_TYPE_TABLE" - Tables only
+            - "DATA_NODE_TYPE_COLUMN" - Columns only
+            - "DATA_NODE_TYPE_CUSTOM" - Custom nodes (e.g., AI agents)
+        limit: Maximum number of results to return (default: 20)
+        
+    Returns:
+        Dictionary containing found nodes with their IDs and details
+        
+    Examples:
+        # Find a specific table (workspace_id 161)
+        await lineage_find_node(161, "SNOWFLAKE/PROD_REPL/DIM_CUSTOMER")
+        
+        # Find all tables in a schema
+        await lineage_find_node(161, "SNOWFLAKE/PROD_REPL/*")
+        
+        # Find all tables with "CUSTOMER" in the name
+        await lineage_find_node(161, "*CUSTOMER*")
+        
+        # Find only table nodes with "CUSTOMER" 
+        await lineage_find_node(161, "*CUSTOMER*", node_type="DATA_NODE_TYPE_TABLE")
+        
+        # Find a specific column
+        await lineage_find_node(161, "SNOWFLAKE/PROD_REPL/DIM_CUSTOMER/CUSTOMER_ID")
+        
+        # Find all custom nodes (AI agents)
+        await lineage_find_node(161, "*", node_type="DATA_NODE_TYPE_CUSTOM")
+        
+        # Find custom nodes with "Claude" in the name
+        await lineage_find_node(161, "*Claude*", node_type="DATA_NODE_TYPE_CUSTOM")
+    """
+    # Enhanced debug logging
+    debug_print(f"=== lineage_find_node called ===")
+    debug_print(f"  workspace_id: {workspace_id} (type: {type(workspace_id)})")
+    debug_print(f"  search_string: '{search_string}'")
+    debug_print(f"  node_type: {node_type}")
+    debug_print(f"  limit: {limit}")
+    debug_print(f"  auth_client.is_authenticated: {auth_client.is_authenticated}")
+    debug_print(f"  auth_client.current_workspace_id: {auth_client.current_workspace_id}")
+    
+    if not auth_client.is_authenticated:
+        return {
+            'error': 'Not authenticated',
+            'hint': 'Use authenticate_bigeye tool first'
+        }
+    
+    client = get_api_client()
+    if not client:
+        return {'error': 'Failed to get API client'}
+    
+    # Ensure workspace_id is an integer
+    try:
+        workspace_id = int(workspace_id)
+        debug_print(f"Converted workspace_id to int: {workspace_id}")
+    except (ValueError, TypeError) as e:
+        error_msg = f"workspace_id must be a valid integer, got: {workspace_id} (type: {type(workspace_id)})"
+        debug_print(f"ERROR: {error_msg}")
+        return {
+            "error": True,
+            "message": error_msg
+        }
+        
+    try:
+        # Normalize the search string (trim whitespace around slashes)
+        normalized_search = search_string.strip().replace(' / ', '/').replace('/ ', '/').replace(' /', '/')
+        
+        debug_print(f"Normalized search string: '{normalized_search}'")
+        debug_print(f"Calling client.search_lineage_v2 with:")
+        debug_print(f"  search_string: '{normalized_search}'")
+        debug_print(f"  workspace_id: {workspace_id}")
+        debug_print(f"  limit: {limit}")
+        
+        # Use the v2 search API
+        result = await client.search_lineage_v2(
+            search_string=normalized_search,
+            workspace_id=workspace_id,
+            limit=limit
+        )
+        
+        debug_print(f"API response error status: {result.get('error')}")
+        debug_print(f"Full API response: {result}")
+        
+        if result.get("error"):
+            debug_print(f"Returning error response: {result}")
+            return result
+            
+        # Extract and format results
+        nodes = result.get("results", [])
+        debug_print(f"Found {len(nodes)} nodes in results")
+        
+        formatted_nodes = []
+        
+        for node in nodes:
+            # Filter by node type if specified
+            if node_type and node.get("nodeType") != node_type:
+                debug_print(f"Skipping node due to type mismatch: {node.get('nodeType')} != {node_type}")
+                continue
+                
+            # Build the display path
+            catalog_path = node.get("catalogPath", {})
+            path_parts = catalog_path.get("pathParts", [])
+            
+            # Format the path for display
+            if path_parts:
+                display_path = " / ".join(path_parts)
+            else:
+                display_path = node.get("nodeName", "Unknown")
+            
+            formatted_node = {
+                "id": node.get("id"),
+                "name": node.get("nodeName"),
+                "type": node.get("nodeType"),
+                "path": display_path,
+                "container": node.get("nodeContainerName"),
+                "catalog_path": catalog_path
+            }
+            formatted_nodes.append(formatted_node)
+            debug_print(f"Added node: {formatted_node}")
+        
+        debug_print(f"Returning {len(formatted_nodes)} formatted nodes")
+        
+        return {
+            "search_string": search_string,
+            "normalized_search": normalized_search,
+            "node_type_filter": node_type,
+            "found_count": len(formatted_nodes),
+            "nodes": formatted_nodes,
+            "hint": "Use the 'id' field from results with other lineage tools"
+        }
+        
+    except Exception as e:
+        error_msg = f"Search failed: {str(e)}"
+        debug_print(f"ERROR in lineage_find_node: {error_msg}")
+        import traceback
+        debug_print(f"Traceback: {traceback.format_exc()}")
+        return {
+            "error": True,
+            "message": error_msg
+        }
+
+@mcp.tool()
+async def lineage_explore_catalog(
+    schema_name: Optional[str] = None,
+    warehouse_name: Optional[str] = None,
+    search_term: Optional[str] = None,
+    page_size: int = 50
+) -> Dict[str, Any]:
+    """Explore tables in Bigeye's catalog.
+    
+    This diagnostic tool helps discover how tables are named and structured in Bigeye's catalog.
+    
+    Args:
+        schema_name: Optional schema name to filter by (e.g., "PROD_REPL")
+        warehouse_name: Optional warehouse name to filter by (e.g., "SNOWFLAKE")
+        search_term: Optional search term to filter table names
+        page_size: Number of results to return (default: 50)
+        
+    Returns:
+        Dictionary containing catalog tables with their full names
+        
+    Example:
+        # Find all tables in PROD_REPL schema
+        await explore_catalog_tables(schema_name="PROD_REPL")
+        
+        # Find tables with "ORDER" in the name
+        await explore_catalog_tables(search_term="ORDER")
+    """
+    if not auth_client.is_authenticated:
+        return {
+            'error': 'Not authenticated',
+            'hint': 'Use authenticate_bigeye tool first'
+        }
+    
+    client = get_api_client()
+    if not client:
+        return {'error': 'Failed to get API client'}
+        
+    try:
+        # Get tables from catalog
+        result = await client.get_catalog_tables(
+            workspace_id=auth_client.current_workspace_id,
+            schema_name=schema_name,
+            warehouse_name=warehouse_name,
+            page_size=page_size
+        )
+        
+        if result.get("error"):
+            return result
+            
+        tables = result.get("tables", [])
+        
+        # Filter by search term if provided
+        if search_term:
+            search_upper = search_term.upper()
+            tables = [t for t in tables if search_upper in t.get("tableName", "").upper()]
+        
+        # Format the results
+        formatted_tables = []
+        for table in tables:
+            formatted_tables.append({
+                "id": table.get("id"),
+                "name": table.get("tableName"),
+                "schema": table.get("schemaName"),
+                "warehouse": table.get("warehouseName"),
+                "full_name": f"{table.get('warehouseName', '')}.{table.get('schemaName', '')}.{table.get('tableName', '')}",
+                "catalog_path": table.get("catalogPath")
+            })
+            
+        return {
+            "schema_filter": schema_name,
+            "warehouse_filter": warehouse_name,
+            "search_term": search_term,
+            "found_count": len(formatted_tables),
+            "tables": formatted_tables[:20],  # Limit to first 20 for readability
+            "note": f"Showing first {min(20, len(formatted_tables))} of {len(formatted_tables)} tables"
+        }
+        
+    except Exception as e:
+        return {
+            "error": True,
+            "message": f"Catalog exploration failed: {str(e)}"
+        }
+
+
+@mcp.tool()
+async def lineage_delete_node(
+    node_id: int,
+    force: bool = False
+) -> Dict[str, Any]:
+    """Delete a custom lineage node from Bigeye's lineage graph.
+    
+    This tool removes a custom lineage node (such as an AI agent node) from 
+    the lineage graph. It will also attempt to remove all associated edges.
+    
+    WARNING: This operation cannot be undone. Use with caution.
+    
+    Args:
+        node_id: The ID of the custom lineage node to delete
+        force: Force deletion even if node has active edges (default: False)
+        
+    Returns:
+        Dictionary containing deletion results
+        
+    Example:
+        # Delete an agent node
+        result = await lineage_delete_node(node_id=12345)
+        print(f"Deleted node {result['node_id']}")
+        
+        # Force delete even with edges
+        result = await lineage_delete_node(node_id=12345, force=True)
+    """
+    if not auth_client.is_authenticated:
+        return {
+            'error': 'Not authenticated',
+            'hint': 'Use authenticate_bigeye tool first'
+        }
+    
+    client = get_api_client()
+    if not client:
+        return {'error': 'Failed to get API client'}
+    
+    try:
+        # First, get the node details to confirm it exists and is custom
+        node_result = await client.get_lineage_node(node_id=node_id)
+        
+        if node_result.get("error"):
+            return {
+                "error": True,
+                "message": f"Cannot find node {node_id}: {node_result.get('message', 'Unknown error')}"
+            }
+        
+        node_type = node_result.get("nodeType", "")
+        node_name = node_result.get("nodeName", "Unknown")
+        
+        # Safety check: only allow deletion of custom nodes
+        if node_type != "DATA_NODE_TYPE_CUSTOM":
+            return {
+                "error": True,
+                "message": f"Cannot delete node {node_id}: Only custom nodes can be deleted. This node is type: {node_type}"
+            }
+        
+        # If not forcing, check for edges
+        if not force:
+            # Try to get edges for this node
+            edges_result = await client.get_lineage_edges_for_node(node_id=node_id)
+            
+            if not edges_result.get("error"):
+                edges = edges_result.get("edges", [])
+                if edges:
+                    return {
+                        "error": True,
+                        "message": f"Node {node_id} has {len(edges)} active edges. Use force=True to delete anyway.",
+                        "node_name": node_name,
+                        "edge_count": len(edges)
+                    }
+        
+        # Proceed with deletion
+        delete_result = await client.delete_lineage_node(node_id=node_id, force=force)
+        
+        if delete_result.get("error"):
+            return {
+                "error": True,
+                "message": f"Failed to delete node {node_id}: {delete_result.get('message', 'Unknown error')}"
+            }
+        
+        return {
+            "success": True,
+            "message": f"Successfully deleted custom lineage node",
+            "node_id": node_id,
+            "node_name": node_name,
+            "node_type": node_type
+        }
+        
+    except Exception as e:
+        return {
+            "error": True,
+            "message": f"Error deleting lineage node: {str(e)}"
+        }
 
 # Run the server if executed directly
 if __name__ == "__main__":

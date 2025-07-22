@@ -22,6 +22,21 @@ DEFAULT_CONFIG = {
     "debug": False
 }
 
+# Check if we have required environment variables
+def check_required_env_vars():
+    """Check if required environment variables are set."""
+    required_vars = ["BIGEYE_API_KEY", "BIGEYE_WORKSPACE_ID"]
+    missing_vars = []
+    
+    for var in required_vars:
+        if not os.environ.get(var):
+            missing_vars.append(var)
+    
+    if missing_vars:
+        print(f"[BIGEYE MCP CONFIG] ERROR: Missing required environment variables: {', '.join(missing_vars)}", file=sys.stderr)
+        print("[BIGEYE MCP CONFIG] Please create a .env file with the required variables. See .env.example for reference.", file=sys.stderr)
+        sys.exit(1)
+
 def load_config_from_file() -> Dict[str, Any]:
     """Load configuration from JSON file."""
     try:
@@ -49,13 +64,27 @@ config = {
     "api_key": os.environ.get("BIGEYE_API_KEY", file_config.get("api_key", DEFAULT_CONFIG["api_key"])),
     
     # Workspace ID (env var, config file, or None)
-    "workspace_id": int(os.environ.get("BIGEYE_WORKSPACE_ID", file_config.get("workspace_id", 0))) or None,
+    "workspace_id": None,  # Will be set below with proper error handling
     
     # Debug mode (env var, config file, or False)
     "debug": os.environ.get("BIGEYE_DEBUG", "").lower() in ["true", "1", "yes"] 
         if "BIGEYE_DEBUG" in os.environ 
         else file_config.get("debug", DEFAULT_CONFIG["debug"])
 }
+
+# Handle workspace_id conversion with proper error handling
+workspace_id_str = os.environ.get("BIGEYE_WORKSPACE_ID") or file_config.get("workspace_id")
+if workspace_id_str:
+    try:
+        # Only convert if we have a non-empty string
+        if str(workspace_id_str).strip():
+            config["workspace_id"] = int(workspace_id_str)
+    except ValueError:
+        print(f"[BIGEYE MCP CONFIG] Warning: Invalid workspace_id value: {workspace_id_str}", file=sys.stderr)
+        config["workspace_id"] = None
+
+# Check required environment variables
+check_required_env_vars()
 
 # Log the configuration (without API key for security)
 if config["debug"]:

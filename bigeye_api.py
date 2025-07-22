@@ -54,6 +54,19 @@ class BigeyeAPIClient:
                 if method == "GET":
                     response = await client.get(url, headers=headers, params=params)
                 elif method == "POST":
+                    # Enhanced debug logging for POST requests
+                    if "/lineage/search" in url:
+                        print(f"[BIGEYE API DEBUG] === POST REQUEST ===", file=sys.stderr)
+                        print(f"[BIGEYE API DEBUG] URL: {url}", file=sys.stderr)
+                        print(f"[BIGEYE API DEBUG] Headers: {headers}", file=sys.stderr)
+                        print(f"[BIGEYE API DEBUG] json_data: {json_data}", file=sys.stderr)
+                        print(f"[BIGEYE API DEBUG] params: {params}", file=sys.stderr)
+                        print(f"[BIGEYE API DEBUG] Using: {'json_data' if json_data else 'params'}", file=sys.stderr)
+                        
+                        import json as json_module
+                        if json_data:
+                            print(f"[BIGEYE API DEBUG] JSON string being sent: {json_module.dumps(json_data)}", file=sys.stderr)
+                    
                     response = await client.post(url, headers=headers, json=json_data or params)
                 elif method == "PUT":
                     response = await client.put(url, headers=headers, json=json_data or params)
@@ -136,6 +149,8 @@ class BigeyeAPIClient:
         payload = {
             "workspaceId": workspace_id
         }
+        
+        print(f"[BIGEYE API DEBUG] Fetching issues for workspace ID: {workspace_id}", file=sys.stderr)
         
         # Only add page_size if explicitly set
         if page_size is not None:
@@ -424,4 +439,561 @@ class BigeyeAPIClient:
         return await self.make_request(
             f"/api/v2/lineage/nodes/{node_id}/upstream-applicable-metric-types",
             method="GET"
+        )
+        
+    async def create_lineage_node(
+        self,
+        node_name: str,
+        node_container_name: str,
+        node_type: str = "DATA_NODE_TYPE_CUSTOM",
+        workspace_id: Optional[int] = None,
+        rebuild_graph: bool = True
+    ) -> Dict[str, Any]:
+        """Create a custom lineage node.
+        
+        Args:
+            node_name: Name of the node (e.g., "AI Agent - Claude")
+            node_container_name: Container name for the node (e.g., "MCP Server", "Python")
+            node_type: Type of node (default: "DATA_NODE_TYPE_CUSTOM")
+            workspace_id: Optional workspace ID
+            rebuild_graph: Whether to rebuild the lineage graph after creating the node
+            
+        Returns:
+            Dictionary containing the created node details
+        """
+        payload = {
+            "nodeType": node_type,
+            "nodeName": node_name,
+            "nodeContainerName": node_container_name,
+            "rebuildGraph": rebuild_graph
+        }
+        
+        if workspace_id is not None:
+            payload["workspaceId"] = workspace_id
+            
+        return await self.make_request(
+            "/api/v2/lineage/nodes",
+            method="POST",
+            json_data=payload
+        )
+        
+    async def create_lineage_edge(
+        self,
+        upstream_node_id: int,
+        downstream_node_id: int,
+        relationship_type: str = "RELATIONSHIP_TYPE_LINEAGE",
+        rebuild_graph: bool = True
+    ) -> Dict[str, Any]:
+        """Create a lineage edge between two nodes.
+        
+        Args:
+            upstream_node_id: ID of the upstream node (data source)
+            downstream_node_id: ID of the downstream node (data consumer)
+            relationship_type: Type of relationship (default: "RELATIONSHIP_TYPE_LINEAGE")
+            rebuild_graph: Whether to rebuild the lineage graph after creating the edge
+            
+        Returns:
+            Dictionary containing the created edge details
+        """
+        payload = {
+            "upstreamDataNodeId": upstream_node_id,
+            "downstreamDataNodeId": downstream_node_id,
+            "relationshipType": relationship_type,
+            "rebuildGraph": rebuild_graph
+        }
+        
+        return await self.make_request(
+            "/api/v2/lineage/edges",
+            method="POST",
+            json_data=payload
+        )
+        
+    async def find_lineage_node_by_name(
+        self,
+        node_name: str,
+        node_type: Optional[str] = None
+    ) -> Dict[str, Any]:
+        """Find a lineage node by name.
+        
+        Args:
+            node_name: Name of the node to find
+            node_type: Optional node type to filter by
+            
+        Returns:
+            Dictionary containing matching nodes
+        """
+        params = {
+            "nodeName": node_name
+        }
+        
+        if node_type:
+            params["nodeType"] = node_type
+            
+        result = await self.make_request(
+            "/api/v2/lineage/nodes/search",
+            method="GET",
+            params=params
+        )
+        
+        # If we get a 404, try without node type as fallback
+        if result.get("error") and result.get("status_code") == 404 and node_type:
+            print(f"[BIGEYE API DEBUG] Retrying search without node type filter", file=sys.stderr)
+            params = {"nodeName": node_name}
+            result = await self.make_request(
+                "/api/v2/lineage/nodes/search",
+                method="GET",
+                params=params
+            )
+            
+        return result
+        
+    async def get_lineage_node_by_entity_id(
+        self,
+        entity_id: int
+    ) -> Dict[str, Any]:
+        """Get a lineage node by its entity ID.
+        
+        Args:
+            entity_id: The entity ID of the node
+            
+        Returns:
+            Dictionary containing the node details
+        """
+        # Try to get nodes for this entity
+        result = await self.make_request(
+            f"/api/v2/lineage/nodes/entity/{entity_id}",
+            method="GET"
+        )
+        
+        # If that endpoint doesn't exist, try search
+        if result.get("error") and result.get("status_code") == 404:
+            # Search for nodes without name filter
+            all_nodes = await self.make_request(
+                "/api/v2/lineage/nodes",
+                method="GET"
+            )
+            
+            if not all_nodes.get("error"):
+                nodes = all_nodes.get("nodes", [])
+                for node in nodes:
+                    if node.get("nodeEntityId") == entity_id:
+                        return {"nodes": [node]}
+                        
+        return result
+        
+    async def find_table_lineage_node(
+        self,
+        database: str,
+        schema: str,
+        table: str
+    ) -> Dict[str, Any]:
+        """Find a lineage node for a specific table.
+        
+        Args:
+            database: Database name
+            schema: Schema name
+            table: Table name
+            
+        Returns:
+            Dictionary containing the table's lineage node if found
+        """
+        # Try different name formats that Bigeye might use
+        name_formats = [
+            f"{database}.{schema}.{table}",  # Standard 3-part name
+            f"{schema}.{table}",              # 2-part name (schema.table)
+            f"{table}",                       # Just table name
+            f"SNOWFLAKE.{database}.{schema}.{table}",  # With warehouse prefix
+        ]
+        
+        print(f"[BIGEYE API DEBUG] Trying to find table with formats: {name_formats}", file=sys.stderr)
+        
+        # Try each format
+        for name_format in name_formats:
+            full_table_name = name_format.upper()
+            print(f"[BIGEYE API DEBUG] Searching for table: {full_table_name}", file=sys.stderr)
+            
+            result = await self.make_request(
+                "/api/v2/lineage/nodes/search",
+                method="GET",
+                params={
+                    "nodeName": full_table_name,
+                    "nodeType": "DATA_NODE_TYPE_TABLE"
+                }
+            )
+            
+            # Check if we found the table
+            if result and not result.get("error"):
+                nodes = result.get("nodes", [])
+                if nodes:
+                    print(f"[BIGEYE API DEBUG] Found table with format: {full_table_name}", file=sys.stderr)
+                    return result
+        
+        # If none of the formats worked, return the last error
+        print(f"[BIGEYE API DEBUG] Table not found with any format", file=sys.stderr)
+        return result
+        
+    async def search_lineage_nodes_by_pattern(
+        self,
+        pattern: str,
+        node_type: Optional[str] = None
+    ) -> Dict[str, Any]:
+        """Search for lineage nodes by pattern without strict matching.
+        
+        Args:
+            pattern: Search pattern for node names
+            node_type: Optional node type filter
+            
+        Returns:
+            Dictionary containing matching nodes
+        """
+        params = {
+            "nodeName": pattern.upper()
+        }
+        
+        if node_type:
+            params["nodeType"] = node_type
+            
+        print(f"[BIGEYE API DEBUG] Searching nodes with pattern: {pattern}, type: {node_type}", file=sys.stderr)
+        
+        return await self.make_request(
+            "/api/v2/lineage/nodes/search",
+            method="GET",
+            params=params
+        )
+        
+    async def find_column_lineage_node(
+        self,
+        database: str,
+        schema: str,
+        table: str,
+        column: str
+    ) -> Dict[str, Any]:
+        """Find a lineage node for a specific column.
+        
+        Args:
+            database: Database name
+            schema: Schema name
+            table: Table name
+            column: Column name
+            
+        Returns:
+            Dictionary containing the column's lineage node if found
+        """
+        # Search for the column using its fully qualified name
+        full_column_name = f"{database}.{schema}.{table}.{column}".upper()
+        
+        return await self.make_request(
+            "/api/v2/lineage/nodes/search",
+            method="GET",
+            params={
+                "nodeName": full_column_name,
+                "nodeType": "DATA_NODE_TYPE_COLUMN"
+            }
+        )
+        
+    async def get_lineage_edges_for_node(
+        self,
+        node_id: int,
+        direction: str = "both"
+    ) -> Dict[str, Any]:
+        """Get all lineage edges connected to a node.
+        
+        Args:
+            node_id: The lineage node ID
+            direction: Direction to search ("upstream", "downstream", or "both")
+            
+        Returns:
+            Dictionary containing edges connected to the node
+        """
+        # Note: This endpoint might not exist in the current Bigeye API
+        # If it doesn't exist, we might need to use get_lineage_graph and extract edges
+        try:
+            # First try a direct edge endpoint if it exists
+            return await self.make_request(
+                f"/api/v2/lineage/nodes/{node_id}/edges",
+                method="GET",
+                params={"direction": direction}
+            )
+        except Exception:
+            # Fallback: Use lineage graph and extract edges
+            graph = await self.get_lineage_graph(
+                node_id=node_id,
+                direction=direction,
+                max_depth=1
+            )
+            
+            # Extract edges from the graph
+            edges = []
+            if graph and "nodes" in graph:
+                for node_data in graph["nodes"].values():
+                    if "upstreamEdges" in node_data:
+                        edges.extend(node_data["upstreamEdges"])
+                    if "downstreamEdges" in node_data:
+                        edges.extend(node_data["downstreamEdges"])
+                        
+            return {"edges": edges}
+            
+    async def delete_lineage_edge(
+        self,
+        edge_id: int
+    ) -> Dict[str, Any]:
+        """Delete a lineage edge.
+        
+        Args:
+            edge_id: The ID of the edge to delete
+            
+        Returns:
+            Dictionary containing deletion status
+        """
+        return await self.make_request(
+            f"/api/v2/lineage/edges/{edge_id}",
+            method="DELETE"
+        )
+        
+    async def get_catalog_tables(
+        self,
+        workspace_id: int,
+        schema_name: Optional[str] = None,
+        warehouse_name: Optional[str] = None,
+        page_size: int = 100
+    ) -> Dict[str, Any]:
+        """Get tables from Bigeye's catalog.
+        
+        Args:
+            workspace_id: The workspace ID
+            schema_name: Optional schema name to filter by
+            warehouse_name: Optional warehouse name to filter by
+            page_size: Number of results per page
+            
+        Returns:
+            Dictionary containing catalog tables
+        """
+        payload = {
+            "workspaceId": workspace_id,
+            "pageSize": page_size
+        }
+        
+        if schema_name:
+            payload["schemaName"] = schema_name
+            
+        if warehouse_name:
+            payload["warehouseName"] = warehouse_name
+            
+        return await self.make_request(
+            "/api/v1/catalog/tables",
+            method="POST",
+            json_data=payload
+        )
+        
+    async def get_issues_for_table(
+        self,
+        workspace_id: int,
+        table_name: str,
+        warehouse_name: Optional[str] = None,
+        schema_name: Optional[str] = None,
+        currentStatus: Optional[List[str]] = None
+    ) -> Dict[str, Any]:
+        """Get issues for a specific table.
+        
+        Args:
+            workspace_id: The workspace ID
+            table_name: Table name to filter by
+            warehouse_name: Optional warehouse name
+            schema_name: Optional schema name
+            currentStatus: Optional list of issue statuses
+            
+        Returns:
+            Dictionary containing issues for the table
+        """
+        # First, try to find the table in the catalog
+        catalog_result = await self.get_catalog_tables(
+            workspace_id=workspace_id,
+            schema_name=schema_name,
+            warehouse_name=warehouse_name,
+            page_size=100
+        )
+        
+        if catalog_result.get("error"):
+            return catalog_result
+            
+        tables = catalog_result.get("tables", [])
+        
+        # Find the matching table
+        matching_table = None
+        for table in tables:
+            if table.get("tableName", "").upper() == table_name.upper():
+                matching_table = table
+                break
+                
+        if not matching_table:
+            return {
+                "error": True,
+                "message": f"Table {table_name} not found in catalog"
+            }
+            
+        # Get the table's ID and schema
+        table_id = matching_table.get("id")
+        table_schema = matching_table.get("schemaName")
+        
+        print(f"[BIGEYE API DEBUG] Found table {table_name} with ID {table_id} in schema {table_schema}", file=sys.stderr)
+        
+        # Now fetch issues for this specific schema/table
+        payload = {
+            "workspaceId": workspace_id
+        }
+        
+        if table_schema:
+            payload["schemaNames"] = [table_schema]
+            
+        if currentStatus:
+            payload["currentStatus"] = currentStatus
+            
+        # Fetch all issues for the schema
+        issues_result = await self.make_request(
+            "/api/v1/issues/fetch",
+            method="POST",
+            json_data=payload
+        )
+        
+        if issues_result.get("error"):
+            return issues_result
+            
+        all_issues = issues_result.get("issues", [])
+        
+        # Filter to only issues for this specific table
+        table_issues = []
+        for issue in all_issues:
+            # Check if issue is related to this table
+            metric = issue.get("metric", {})
+            if metric:
+                metric_table = metric.get("tableName", "")
+                if metric_table.upper() == table_name.upper():
+                    table_issues.append(issue)
+                    
+        return {
+            "table": table_name,
+            "schema": table_schema,
+            "total_issues": len(table_issues),
+            "issues": table_issues
+        }
+        
+    async def get_table_metrics(
+        self,
+        workspace_id: int,
+        table_name: str,
+        schema_name: Optional[str] = None
+    ) -> Dict[str, Any]:
+        """Get metrics configured for a specific table.
+        
+        Args:
+            workspace_id: The workspace ID
+            table_name: Table name
+            schema_name: Optional schema name
+            
+        Returns:
+            Dictionary containing metrics for the table
+        """
+        # Build the API path - this might need adjustment based on actual API
+        params = {
+            "workspaceId": workspace_id,
+            "tableName": table_name
+        }
+        
+        if schema_name:
+            params["schemaName"] = schema_name
+            
+        return await self.make_request(
+            "/api/v1/metrics",
+            method="GET",
+            params=params
+        )
+        
+    async def delete_lineage_node(
+        self,
+        node_id: int,
+        force: bool = False
+    ) -> Dict[str, Any]:
+        """Delete a custom lineage node.
+        
+        Args:
+            node_id: The ID of the lineage node to delete
+            force: Force deletion even if node has active edges (the API may not support this)
+            
+        Returns:
+            Dictionary containing deletion status
+        """
+        # Note: The force parameter might not be supported by the API
+        # but we include it for future compatibility
+        params = {}
+        if force:
+            params["force"] = "true"
+            
+        return await self.make_request(
+            f"/api/v2/lineage/nodes/{node_id}",
+            method="DELETE",
+            params=params if params else None
+        )
+        
+    async def search_lineage_v2(
+        self,
+        search_string: str,
+        workspace_id: int,
+        limit: int = 100
+    ) -> Dict[str, Any]:
+        """Search for lineage nodes using the v2 search API.
+        
+        This uses Bigeye's path-based search format where you can search using:
+        - warehouse/schema/table/column format
+        - Partial names with wildcards (*)
+        - Individual component names
+        
+        Args:
+            search_string: Search string in path format (e.g., "SNOWFLAKE/SALES/ORDERS")
+            workspace_id: The workspace ID to search in
+            limit: Maximum number of results (default: 100)
+            
+        Returns:
+            Dictionary containing search results with node details
+            
+        Examples:
+            - "SNOWFLAKE/SALES" - Find all objects in SNOWFLAKE.SALES schema
+            - "*/ORDERS" - Find all ORDERS tables across any schema
+            - "CUSTOMER*" - Find all objects starting with CUSTOMER
+            - "PROD_REPL/DIM_CUSTOMER/CUSTOMER_ID" - Find specific column
+        """
+        print(f"[BIGEYE API DEBUG] === search_lineage_v2 called ===", file=sys.stderr)
+        print(f"[BIGEYE API DEBUG] Parameters:", file=sys.stderr)
+        print(f"[BIGEYE API DEBUG]   search_string: '{search_string}' (type: {type(search_string)})", file=sys.stderr)
+        print(f"[BIGEYE API DEBUG]   workspace_id: {workspace_id} (type: {type(workspace_id)})", file=sys.stderr)
+        print(f"[BIGEYE API DEBUG]   limit: {limit} (type: {type(limit)})", file=sys.stderr)
+        
+        # Ensure workspace_id is an integer
+        try:
+            workspace_id = int(workspace_id)
+            print(f"[BIGEYE API DEBUG] Converted workspace_id to int: {workspace_id}", file=sys.stderr)
+        except Exception as e:
+            print(f"[BIGEYE API DEBUG] ERROR converting workspace_id: {e}", file=sys.stderr)
+            return {
+                "error": True,
+                "message": f"Invalid workspace_id: {workspace_id} - must be an integer"
+            }
+        
+        payload = {
+            "search": search_string,
+            "workspaceId": workspace_id,
+            "limit": limit
+        }
+        
+        print(f"[BIGEYE API DEBUG] Created payload:", file=sys.stderr)
+        print(f"[BIGEYE API DEBUG]   {payload}", file=sys.stderr)
+        print(f"[BIGEYE API DEBUG] Payload keys: {list(payload.keys())}", file=sys.stderr)
+        print(f"[BIGEYE API DEBUG] Calling make_request with:", file=sys.stderr)
+        print(f"[BIGEYE API DEBUG]   path: /api/v2/lineage/search", file=sys.stderr)
+        print(f"[BIGEYE API DEBUG]   method: POST", file=sys.stderr)
+        print(f"[BIGEYE API DEBUG]   json_data: {payload}", file=sys.stderr)
+        
+        return await self.make_request(
+            "/api/v2/lineage/search",
+            method="POST",
+            json_data=payload
         )
