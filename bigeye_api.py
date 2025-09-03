@@ -958,74 +958,126 @@ class BigeyeAPIClient:
             params=params if params else None
         )
     
-    async def search(
+    async def search_schemas(
         self,
         workspace_id: int,
-        search_term: Optional[str] = None,
-        types: Optional[List[Dict[str, Any]]] = None,
-        limit: int = 100
+        schema_name: Optional[str] = None,
+        warehouse_ids: Optional[List[int]] = None
     ) -> Dict[str, Any]:
-        """Search for schemas, tables, columns, issues, and other objects in Bigeye.
-        
-        This implements the main search functionality used by the Bigeye UI.
+        """Search for schemas in Bigeye.
         
         Args:
             workspace_id: Required workspace ID for the search
-            search_term: Optional search string to filter results
-            types: Optional list of types to filter by. Each type is a dict with either:
-                   - {"system_search_type": "SYSTEM_SEARCH_TYPE_COLLECTION"} for collections
-                   - {"system_search_type": "SYSTEM_SEARCH_TYPE_DELTA"} for deltas
-                   - {"system_search_type": "SYSTEM_SEARCH_TYPE_ISSUE"} for issues
-                   - {"data_node_type": "DATA_NODE_TYPE_TABLE"} for tables
-                   - {"data_node_type": "DATA_NODE_TYPE_COLUMN"} for columns
-                   - {"data_node_type": "DATA_NODE_TYPE_SCHEMA"} for schemas
-            limit: Maximum number of results to return (default: 100)
+            schema_name: Optional schema name to filter by (supports partial matching)
+            warehouse_ids: Optional list of warehouse IDs to filter by
             
         Returns:
-            Dictionary containing search results with schemas, tables, columns, issues, etc.
-            
-        Example:
-            # Search for all objects with "orders" in the name
-            await search(workspace_id=123, search_term="orders")
-            
-            # Search only for tables
-            await search(
-                workspace_id=123,
-                search_term="orders",
-                types=[{"data_node_type": "DATA_NODE_TYPE_TABLE"}]
-            )
+            Dictionary containing schemas
         """
-        # Build the request body - don't include workspace_id in body
-        body = {}
+        params = {
+            "workspaceId": workspace_id
+        }
         
-        if search_term:
-            body["search"] = search_term
+        if schema_name:
+            params["schema"] = schema_name
             
-        if types:
-            # Convert types to the expected format
-            formatted_types = []
-            for type_spec in types:
-                if "system_search_type" in type_spec:
-                    formatted_types.append({
-                        "systemSearchType": type_spec["system_search_type"]
-                    })
-                elif "data_node_type" in type_spec:
-                    formatted_types.append({
-                        "dataNodeType": type_spec["data_node_type"]
-                    })
-            if formatted_types:
-                body["types"] = formatted_types
-                
-        if limit:
-            body["limit"] = limit
+        if warehouse_ids:
+            params["warehouseId"] = warehouse_ids
             
-        # No workspace_id in params or body - it comes from API key context
-        print(f"[BIGEYE API DEBUG] Search request body: {body}", file=sys.stderr)
+        print(f"[BIGEYE API DEBUG] Schema search params: {params}", file=sys.stderr)
         
         return await self.make_request(
-            "/api/v1/search",
-            method="POST",
-            json_data=body
+            "/api/v1/schemas",
+            method="GET",
+            params=params
+        )
+    
+    async def search_tables(
+        self,
+        workspace_id: int,
+        table_name: Optional[str] = None,
+        schema_names: Optional[List[str]] = None,
+        warehouse_ids: Optional[List[int]] = None,
+        include_columns: bool = False
+    ) -> Dict[str, Any]:
+        """Search for tables in Bigeye.
+        
+        Args:
+            workspace_id: Required workspace ID for the search
+            table_name: Optional table name to filter by (supports partial matching)
+            schema_names: Optional list of schema names to filter by
+            warehouse_ids: Optional list of warehouse IDs to filter by
+            include_columns: Whether to include column information in the response
+            
+        Returns:
+            Dictionary containing tables
+        """
+        params = {
+            "workspaceId": workspace_id
+        }
+        
+        if table_name:
+            params["tableName"] = table_name
+            
+        if schema_names:
+            params["schema"] = schema_names
+            
+        if warehouse_ids:
+            params["warehouseId"] = warehouse_ids
+            
+        if not include_columns:
+            params["ignoreFields"] = True
+            
+        print(f"[BIGEYE API DEBUG] Table search params: {params}", file=sys.stderr)
+        
+        return await self.make_request(
+            "/api/v1/tables",
+            method="GET",
+            params=params
+        )
+    
+    async def search_columns(
+        self,
+        workspace_id: int,
+        column_name: Optional[str] = None,
+        table_names: Optional[List[str]] = None,
+        schema_names: Optional[List[str]] = None,
+        warehouse_ids: Optional[List[int]] = None
+    ) -> Dict[str, Any]:
+        """Search for columns in Bigeye.
+        
+        Args:
+            workspace_id: Required workspace ID for the search
+            column_name: Optional column name to filter by (supports partial matching)
+            table_names: Optional list of table names to filter by
+            schema_names: Optional list of schema names to filter by
+            warehouse_ids: Optional list of warehouse IDs to filter by
+            
+        Returns:
+            Dictionary containing columns
+        """
+        params = {
+            "workspaceId": workspace_id
+        }
+        
+        if column_name:
+            params["columnName"] = column_name
+            
+        if table_names:
+            params["tableName"] = table_names
+            
+        if schema_names:
+            params["schema"] = schema_names
+            
+        if warehouse_ids:
+            params["warehouseId"] = warehouse_ids
+            
+        print(f"[BIGEYE API DEBUG] Column search params: {params}", file=sys.stderr)
+        
+        return await self.make_request(
+            "/api/v1/columns",
+            method="GET",
+            params=params
         )
         
     async def search_lineage_v2(
