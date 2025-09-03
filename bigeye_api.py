@@ -960,7 +960,7 @@ class BigeyeAPIClient:
     
     async def search(
         self,
-        workspace_id: Optional[int] = None,  # Not used - workspace context comes from API key
+        workspace_id: int,
         search_term: Optional[str] = None,
         types: Optional[List[Dict[str, Any]]] = None,
         limit: int = 100
@@ -970,7 +970,7 @@ class BigeyeAPIClient:
         This implements the main search functionality used by the Bigeye UI.
         
         Args:
-            workspace_id: Not used - workspace context comes from API key
+            workspace_id: Required workspace ID for the search
             search_term: Optional search string to filter results
             types: Optional list of types to filter by. Each type is a dict with either:
                    - {"system_search_type": "SYSTEM_SEARCH_TYPE_COLLECTION"} for collections
