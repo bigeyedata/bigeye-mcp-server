@@ -155,7 +155,8 @@ class BigeyeAPIClient:
         currentStatus: Optional[List[str]] = None,
         schemaNames: Optional[List[str]] = None,
         page_size: Optional[int] = None,
-        page_cursor: Optional[str] = None
+        page_cursor: Optional[str] = None,
+        include_full_history: bool = False
     ) -> Dict[str, Any]:
         """Fetch issues from the Bigeye API.
         
@@ -166,6 +167,7 @@ class BigeyeAPIClient:
             schemaNames: Optional list of schema names to filter issues by
             page_size: Optional number of issues to return per page
             page_cursor: Cursor for pagination
+            include_full_history: If False, strips out historical metric runs to reduce data size
             
         Returns:
             Dictionary containing the issues
@@ -189,11 +191,44 @@ class BigeyeAPIClient:
         if page_cursor:
             payload["pageCursor"] = page_cursor
             
-        return await self.make_request(
+        result = await self.make_request(
             "/api/v1/issues/fetch",
             method="POST",
             json_data=payload
         )
+        
+        # If we want to reduce the response size, strip out the events/metric runs
+        if not include_full_history and "issues" in result:
+            for issue in result.get("issues", []):
+                # Keep only essential fields for each issue
+                essential_fields = [
+                    "id", "name", "currentStatus", "priority", "description",
+                    "tableName", "columnName", "schemaName", "warehouseName",
+                    "createdAt", "updatedAt", "lastEventTime", "assignee",
+                    "owner", "labels", "tags", "isIncident", "parentIssueId",
+                    "metric", "alertId", "metricId", "tableId", "columnId"
+                ]
+                
+                # Remove or truncate non-essential fields
+                if "events" in issue:
+                    # Keep only the first event (most recent) for basic info
+                    issue["events"] = issue["events"][:1] if issue["events"] else []
+                    
+                    # For that event, remove large nested data
+                    for event in issue["events"]:
+                        if "metricEvent" in event:
+                            # Just keep the event type and timestamp
+                            event["metricEvent"] = {
+                                "type": event["metricEvent"].get("type"),
+                                "timestamp": event["metricEvent"].get("timestamp")
+                            }
+                
+                # Remove other large fields that might exist
+                issue.pop("metricRunHistory", None)
+                issue.pop("detailedHistory", None)
+                issue.pop("allEvents", None)
+        
+        return result
         
     async def merge_issues(
         self,
@@ -883,6 +918,22 @@ class BigeyeAPIClient:
             return issues_result
             
         all_issues = issues_result.get("issues", [])
+        
+        # Strip out excessive historical data from issues
+        for issue in all_issues:
+            # Keep only essential fields and minimal events
+            if "events" in issue:
+                issue["events"] = issue["events"][:1] if issue["events"] else []
+                for event in issue["events"]:
+                    if "metricEvent" in event:
+                        event["metricEvent"] = {
+                            "type": event["metricEvent"].get("type"),
+                            "timestamp": event["metricEvent"].get("timestamp")
+                        }
+            # Remove other large fields
+            issue.pop("metricRunHistory", None)
+            issue.pop("detailedHistory", None)
+            issue.pop("allEvents", None)
         
         # Filter to only issues for this specific table
         table_issues = []

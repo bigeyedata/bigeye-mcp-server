@@ -178,7 +178,11 @@ async def get_issues(
     page_size: Optional[int] = None,
     page_cursor: Optional[str] = None
 ) -> Dict[str, Any]:
-    """Get issues from the Bigeye API.
+    """Get issues from the Bigeye API with optimized response size.
+    
+    This tool fetches issues with only essential metadata (id, name, status, owner, etc.)
+    and minimal event history to keep responses manageable. Full historical metric runs
+    are excluded to prevent overwhelming context.
     
     Args:
         statuses: Optional list of issue statuses to filter by. Possible values:
@@ -188,11 +192,11 @@ async def get_issues(
             - ISSUE_STATUS_MONITORING
             - ISSUE_STATUS_MERGED
         schema_names: Optional list of schema names to filter issues by
-        page_size: Optional number of issues to return per page
+        page_size: Optional number of issues to return per page (default: 20)
         page_cursor: Cursor for pagination
         
     Returns:
-        Dictionary containing the issues
+        Dictionary containing issues with essential metadata only
     """
     
     client = get_api_client()
@@ -217,8 +221,9 @@ async def get_issues(
         workspace_id=workspace_id,  # Use the variable we captured above
         currentStatus=statuses,
         schemaNames=schema_names,
-        page_size=page_size,
-        page_cursor=page_cursor
+        page_size=page_size if page_size else 20,  # Default to 20 issues
+        page_cursor=page_cursor,
+        include_full_history=False  # Exclude full metric run history
     )
     
     issue_count = len(result.get("issues", []))
