@@ -10,48 +10,80 @@ An MCP (Model Context Protocol) server that provides tools for interacting with 
 - Perform root cause analysis for data quality issues
 - Manage incidents and issue resolution
 
-## 🔐 Security-First Configuration
+## 🔐 Configuration
 
-**Important**: This server uses **environment variables only** for authentication. Dynamic authentication through the chat interface has been disabled to prevent credential exposure.
+**Important**: This server requires credentials to be configured in your Claude Desktop configuration file. There are no fallbacks - if credentials are not provided via environment variables, the server will exit with instructions on how to configure them.
 
-### Required Environment Variables
+### Claude Desktop Configuration (Required)
 
-Create a `.env` file in the project directory with the following variables:
+The Bigeye MCP server reads credentials from environment variables passed by Claude Desktop. You must configure these in your Claude Desktop configuration file:
 
-```bash
-# Bigeye API Configuration
-BIGEYE_API_URL=https://your-instance.bigeye.com
-BIGEYE_API_KEY=your_api_key_here
-BIGEYE_WORKSPACE_ID=your_workspace_id_here
+**macOS**: `~/Library/Application Support/Claude/claude_desktop_config.json`  
+**Windows**: `%APPDATA%\Claude\claude_desktop_config.json`
 
-# Optional
-BIGEYE_DEBUG=false
+```json
+{
+  "mcpServers": {
+    "bigeye": {
+      "command": "python",
+      "args": ["/path/to/bigeye-mcp-server/server.py"],
+      "env": {
+        "BIGEYE_API_KEY": "your_api_key_here",
+        "BIGEYE_API_URL": "https://your-instance.bigeye.com",
+        "BIGEYE_WORKSPACE_ID": "your_workspace_id_here",
+        "BIGEYE_DEBUG": "false"
+      }
+    }
+  }
+}
 ```
 
+### Getting Your Credentials
+
+1. **BIGEYE_API_KEY**: 
+   - Log into your Bigeye instance
+   - Navigate to Settings > API Keys
+   - Create a new API key with appropriate permissions
+
+2. **BIGEYE_API_URL**: 
+   - Your Bigeye instance URL (e.g., `https://app.bigeye.com`, `https://demo.bigeye.com`)
+   - Do not include trailing slashes
+
+3. **BIGEYE_WORKSPACE_ID**: 
+   - Found in your Bigeye URL after `/w/` (e.g., `https://app.bigeye.com/w/123/` → workspace ID is `123`)
+   - Or navigate to Settings > Workspace in Bigeye
+
 **Security Notes**:
-- Never paste API keys directly into Claude Desktop or any chat interface
-- The `.env` file is excluded from Docker builds via `.dockerignore`
-- Store credentials securely and never commit them to version control
-
-### Example Configuration Files
-
-See the provided examples:
-- `.env.example` - Template for your configuration
-- `.env.demo` - Example for demo environment
-- `.env.app` - Example for production environment
+- Never paste API keys directly into chat interfaces
+- Store credentials securely in your Claude Desktop config
+- Never commit credentials to version control
 
 ## Installation
 
-### Docker (Recommended)
+### With Claude Desktop (Recommended)
+
+1. Clone the repository to a local directory
+2. Edit your Claude Desktop config file to add the Bigeye server with your credentials
+3. Restart Claude Desktop
+4. The server will start automatically when Claude Desktop launches
+
+### Docker (Alternative)
 
 1. Clone the repository
-2. Create your `.env` file with the required variables
-3. Build and run with Docker Compose:
+2. Build the Docker image:
    ```bash
-   docker compose up --build
+   docker build -t bigeye-mcp-server .
+   ```
+3. Run with environment variables:
+   ```bash
+   docker run -i --rm \
+     -e BIGEYE_API_KEY="your_api_key" \
+     -e BIGEYE_API_URL="https://your-instance.bigeye.com" \
+     -e BIGEYE_WORKSPACE_ID="your_workspace_id" \
+     bigeye-mcp-server
    ```
 
-### Local Installation
+### Local Installation (Testing)
 
 1. Install Python 3.12+
 2. Create a virtual environment:
@@ -63,11 +95,18 @@ See the provided examples:
    ```bash
    pip install -r requirements.txt
    ```
-4. Create your `.env` file
+4. Set environment variables:
+   ```bash
+   export BIGEYE_API_KEY="your_api_key"
+   export BIGEYE_API_URL="https://your-instance.bigeye.com"
+   export BIGEYE_WORKSPACE_ID="your_workspace_id"
+   ```
 5. Run the server:
    ```bash
    python server.py
    ```
+
+**Note**: For production use with Claude Desktop, configure credentials in the Claude Desktop config file instead of using environment variables.
 
 ## Available Tools
 
@@ -122,10 +161,10 @@ See the provided examples:
 
 ## Usage with Claude Desktop
 
-1. Set up your `.env` file with valid credentials
-2. Configure Claude Desktop to use the MCP server
-3. The server will automatically authenticate using your environment variables
-4. Use the tools to interact with Bigeye without exposing credentials
+1. Add the Bigeye MCP server configuration to your `claude_desktop_config.json` with your credentials
+2. Restart Claude Desktop to load the new configuration
+3. If credentials are missing or invalid, the server will exit with detailed setup instructions
+4. Once configured correctly, use the tools to interact with Bigeye without exposing credentials in chat
 
 ## Agent Lineage Tracking
 
@@ -143,9 +182,11 @@ See [AGENT_LINEAGE_TRACKING.md](AGENT_LINEAGE_TRACKING.md) for detailed document
 ### Missing Environment Variables
 
 If you see: `ERROR: Missing required environment variables`
-- Ensure your `.env` file exists and contains all required variables
-- Check that variable names match exactly (case-sensitive)
-- Verify Docker Compose is reading the `.env` file
+- The server will display detailed instructions on how to configure your credentials
+- Check your Claude Desktop config file contains all required environment variables
+- Ensure variable names match exactly (case-sensitive)
+- Verify the environment variables are properly formatted in the config
+- Restart Claude Desktop after making config changes
 
 ### Authentication Errors
 
