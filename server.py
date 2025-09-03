@@ -1420,14 +1420,12 @@ async def lineage_cleanup_agent_edges(
 
 @mcp.tool()
 async def lineage_find_node(
-    workspace_id: int,
+    workspace_id: Optional[int] = None,
     search_string: str = "*",
     node_type: Optional[str] = None,
     limit: int = 20
 ) -> Dict[str, Any]:
     """Find lineage nodes and get their IDs using Bigeye's advanced search.
-    
-    You must provide the workspace_id - check bigeye://auth/status for the current workspace ID.
     
     This tool uses Bigeye's path-based search to find nodes in the lineage graph.
     It's particularly useful for getting node IDs that can be used with other lineage tools.
@@ -1439,7 +1437,7 @@ async def lineage_find_node(
     - Use "*" or empty string to search all nodes
     
     Args:
-        workspace_id: The Bigeye workspace ID (required). Check bigeye://auth/status for current workspace.
+        workspace_id: Optional Bigeye workspace ID. If not provided, uses the configured workspace.
         search_string: Search string using path format or partial names (default: "*" for all)
         node_type: Optional node type filter:
             - "DATA_NODE_TYPE_TABLE" - Tables only
@@ -1451,27 +1449,36 @@ async def lineage_find_node(
         Dictionary containing found nodes with their IDs and details
         
     Examples:
-        # Find a specific table (workspace_id 161)
-        await lineage_find_node(161, "SNOWFLAKE/PROD_REPL/DIM_CUSTOMER")
+        # Find a specific table (uses configured workspace)
+        await lineage_find_node(search_string="SNOWFLAKE/PROD_REPL/DIM_CUSTOMER")
         
         # Find all tables in a schema
-        await lineage_find_node(161, "SNOWFLAKE/PROD_REPL/*")
+        await lineage_find_node(search_string="SNOWFLAKE/PROD_REPL/*")
         
         # Find all tables with "CUSTOMER" in the name
-        await lineage_find_node(161, "*CUSTOMER*")
+        await lineage_find_node(search_string="*CUSTOMER*")
         
         # Find only table nodes with "CUSTOMER" 
-        await lineage_find_node(161, "*CUSTOMER*", node_type="DATA_NODE_TYPE_TABLE")
+        await lineage_find_node(search_string="*CUSTOMER*", node_type="DATA_NODE_TYPE_TABLE")
         
         # Find a specific column
-        await lineage_find_node(161, "SNOWFLAKE/PROD_REPL/DIM_CUSTOMER/CUSTOMER_ID")
+        await lineage_find_node(search_string="SNOWFLAKE/PROD_REPL/DIM_CUSTOMER/CUSTOMER_ID")
         
         # Find all custom nodes (AI agents)
-        await lineage_find_node(161, "*", node_type="DATA_NODE_TYPE_CUSTOM")
+        await lineage_find_node(search_string="*", node_type="DATA_NODE_TYPE_CUSTOM")
         
         # Find custom nodes with "Claude" in the name
-        await lineage_find_node(161, "*Claude*", node_type="DATA_NODE_TYPE_CUSTOM")
+        await lineage_find_node(search_string="*Claude*", node_type="DATA_NODE_TYPE_CUSTOM")
     """
+    # Use configured workspace_id if not provided
+    if workspace_id is None:
+        workspace_id = config.get('workspace_id')
+        if not workspace_id:
+            return {
+                'error': 'Workspace ID not configured',
+                'hint': 'Check your Claude Desktop configuration for BIGEYE_WORKSPACE_ID'
+            }
+    
     # Enhanced debug logging
     debug_print(f"=== lineage_find_node called ===")
     debug_print(f"  workspace_id: {workspace_id} (type: {type(workspace_id)})")
