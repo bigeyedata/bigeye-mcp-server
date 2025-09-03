@@ -971,10 +971,8 @@ class BigeyeAPIClient:
                 types=[{"data_node_type": "DATA_NODE_TYPE_TABLE"}]
             )
         """
-        # Build the request body - workspace_id must be in the body for this endpoint
-        body = {
-            "workspaceId": workspace_id
-        }
+        # Build the request body - don't include workspace_id in body
+        body = {}
         
         if search_term:
             body["search"] = search_term
@@ -997,11 +995,18 @@ class BigeyeAPIClient:
         if limit:
             body["limit"] = limit
             
+        # Add workspace_id as query parameter
+        params = {
+            "workspaceId": workspace_id
+        }
+            
         print(f"[BIGEYE API DEBUG] Search request body: {body}", file=sys.stderr)
+        print(f"[BIGEYE API DEBUG] Search params: {params}", file=sys.stderr)
         
         return await self.make_request(
             "/api/v1/search",
             method="POST",
+            params=params,
             json_data=body
         )
         
