@@ -33,6 +33,31 @@ mcp = FastMCP(
     
     The server is pre-configured with credentials from environment variables.
     All tools are ready to use immediately.
+    
+    IMPORTANT: Table and Column Search Workflow
+    ============================================
+    When a user asks about a specific table, column, or schema by name:
+    
+    1. ALWAYS search first using the appropriate search tool:
+       - Use search_tables() when asked about a table
+       - Use search_columns() when asked about a column
+       - Use search_schemas() when asked about a schema
+    
+    2. Present the search results to the user as a numbered list, showing:
+       - Full qualified name (e.g., database.schema.table)
+       - Any relevant metadata (row count, column count, etc.)
+    
+    3. Ask the user to confirm which specific object they meant by number or name
+    
+    4. Only after the user confirms the specific object should you proceed with 
+       the rest of their request (checking health, analyzing issues, etc.)
+    
+    Example interaction:
+    User: "Check the health of the orders table"
+    Assistant: First searches for tables with 'orders' in the name, presents matches,
+              asks user to confirm which one, then proceeds with health check.
+    
+    This ensures accuracy and prevents operations on the wrong database objects.
     """
 )
 
