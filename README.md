@@ -16,7 +16,7 @@ An MCP (Model Context Protocol) server that provides tools for interacting with 
 
 ### Claude Desktop Configuration (Required)
 
-The Bigeye MCP server reads credentials from environment variables passed by Claude Desktop. You must configure these in your Claude Desktop configuration file:
+The Bigeye MCP server runs as an ephemeral Docker container that spins up only when Claude Desktop needs it. Configure it in your Claude Desktop configuration file:
 
 **macOS**: `~/Library/Application Support/Claude/claude_desktop_config.json`  
 **Windows**: `%APPDATA%\Claude\claude_desktop_config.json`
@@ -25,18 +25,30 @@ The Bigeye MCP server reads credentials from environment variables passed by Cla
 {
   "mcpServers": {
     "bigeye": {
-      "command": "python",
-      "args": ["/path/to/bigeye-mcp-server/server.py"],
-      "env": {
-        "BIGEYE_API_KEY": "your_api_key_here",
-        "BIGEYE_API_URL": "https://your-instance.bigeye.com",
-        "BIGEYE_WORKSPACE_ID": "your_workspace_id_here",
-        "BIGEYE_DEBUG": "false"
-      }
+      "command": "docker",
+      "args": [
+        "run",
+        "-i",
+        "--rm",
+        "-e",
+        "BIGEYE_API_KEY=your_api_key_here",
+        "-e",
+        "BIGEYE_API_URL=https://your-instance.bigeye.com",
+        "-e",
+        "BIGEYE_WORKSPACE_ID=your_workspace_id_here",
+        "-e",
+        "BIGEYE_DEBUG=false",
+        "bigeye-mcp-server:latest"
+      ]
     }
   }
 }
 ```
+
+**Docker Flags Explained:**
+- `-i`: Keep stdin open for communication with Claude Desktop
+- `--rm`: Automatically remove the container when it stops (ephemeral)
+- `-e`: Pass environment variables with your credentials
 
 ### Getting Your Credentials
 
@@ -60,30 +72,52 @@ The Bigeye MCP server reads credentials from environment variables passed by Cla
 
 ## Installation
 
-### With Claude Desktop (Recommended)
+### Quick Start with Claude Desktop
 
-1. Clone the repository to a local directory
-2. Edit your Claude Desktop config file to add the Bigeye server with your credentials
-3. Restart Claude Desktop
-4. The server will start automatically when Claude Desktop launches
-
-### Docker (Alternative)
-
-1. Clone the repository
-2. Build the Docker image:
+1. Build the Docker image locally:
    ```bash
-   docker build -t bigeye-mcp-server .
-   ```
-3. Run with environment variables:
-   ```bash
-   docker run -i --rm \
-     -e BIGEYE_API_KEY="your_api_key" \
-     -e BIGEYE_API_URL="https://your-instance.bigeye.com" \
-     -e BIGEYE_WORKSPACE_ID="your_workspace_id" \
-     bigeye-mcp-server
+   git clone https://github.com/your-org/bigeye-mcp-server.git
+   cd bigeye-mcp-server
+   docker build -t bigeye-mcp-server:latest .
    ```
 
-### Local Installation (Testing)
+2. Add the configuration to your Claude Desktop config file (see Configuration section above)
+
+3. Replace the placeholder values with your actual Bigeye credentials
+
+4. Restart Claude Desktop
+
+The Docker container will spin up automatically when Claude Desktop needs it and terminate when no longer in use.
+
+### Using Pre-built Docker Image
+
+If a pre-built image is available on Docker Hub or GitHub Container Registry:
+
+```json
+{
+  "mcpServers": {
+    "bigeye": {
+      "command": "docker",
+      "args": [
+        "run",
+        "-i",
+        "--rm",
+        "-e",
+        "BIGEYE_API_KEY=your_api_key_here",
+        "-e",
+        "BIGEYE_API_URL=https://your-instance.bigeye.com",
+        "-e",
+        "BIGEYE_WORKSPACE_ID=your_workspace_id_here",
+        "ghcr.io/your-org/bigeye-mcp-server:latest"
+      ]
+    }
+  }
+}
+```
+
+### Development Setup
+
+For local development without Docker:
 
 1. Install Python 3.12+
 2. Create a virtual environment:
@@ -106,7 +140,7 @@ The Bigeye MCP server reads credentials from environment variables passed by Cla
    python server.py
    ```
 
-**Note**: For production use with Claude Desktop, configure credentials in the Claude Desktop config file instead of using environment variables.
+**Note**: For production use with Claude Desktop, always use the Docker approach for consistency and isolation.
 
 ## Available Tools
 
@@ -161,10 +195,18 @@ The Bigeye MCP server reads credentials from environment variables passed by Cla
 
 ## Usage with Claude Desktop
 
-1. Add the Bigeye MCP server configuration to your `claude_desktop_config.json` with your credentials
-2. Restart Claude Desktop to load the new configuration
-3. If credentials are missing or invalid, the server will exit with detailed setup instructions
-4. Once configured correctly, use the tools to interact with Bigeye without exposing credentials in chat
+1. Build the Docker image: `docker build -t bigeye-mcp-server:latest .`
+2. Add the Bigeye MCP server configuration to your `claude_desktop_config.json` with your credentials
+3. Restart Claude Desktop to load the new configuration
+4. The server runs as an ephemeral container - starts when needed, stops when done
+5. If credentials are missing or invalid, the container will exit with detailed setup instructions
+6. Once configured correctly, use the tools to interact with Bigeye without exposing credentials in chat
+
+**Container Lifecycle:**
+- Container starts automatically when you begin using Bigeye tools
+- Runs only while actively processing requests
+- Automatically removed after stopping (no cleanup needed)
+- Fresh instance starts for each session
 
 ## Agent Lineage Tracking
 
