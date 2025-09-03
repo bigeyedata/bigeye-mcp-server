@@ -59,7 +59,8 @@ if config.get("workspace_id") and config.get("api_key"):
     debug_print(f"Auth client initialized with workspace ID: {config.get('workspace_id')}")
 api_client = BigeyeAPIClient(
     api_url=config["api_url"],
-    api_key=config["api_key"]
+    api_key=config["api_key"],
+    workspace_id=config.get("workspace_id")
 )
 if config.get("workspace_id"):
     lineage_tracker = AgentLineageTracker(

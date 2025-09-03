@@ -11,15 +11,17 @@ from typing import Dict, Any, Optional, List
 class BigeyeAPIClient:
     """Client for interacting with the Bigeye API."""
     
-    def __init__(self, api_url: str = "https://staging.bigeye.com", api_key: Optional[str] = None):
+    def __init__(self, api_url: str = "https://staging.bigeye.com", api_key: Optional[str] = None, workspace_id: Optional[int] = None):
         """Initialize the Bigeye API client.
         
         Args:
             api_url: The URL of the Bigeye API
             api_key: The API key for authentication
+            workspace_id: The workspace ID to use for API requests
         """
         self.api_url = api_url
         self.api_key = api_key
+        self.workspace_id = workspace_id
     
     async def make_request(
         self, 
@@ -47,6 +49,10 @@ class BigeyeAPIClient:
         if self.api_key:
             # don't change this to Bearer, it's apikey
             headers["Authorization"] = f"apikey {self.api_key}"
+        
+        # Add workspace_id as a header if configured
+        if self.workspace_id:
+            headers["X-Workspace-Id"] = str(self.workspace_id)
         
         # Verbose logging for ALL requests
         print(f"\n[BIGEYE API VERBOSE] === REQUEST DETAILS ===", file=sys.stderr)
