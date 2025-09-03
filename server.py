@@ -1,9 +1,9 @@
 """
-MCP Server for Bigeye API with Dynamic Authentication
+MCP Server for Bigeye API
 
 This server connects to the Bigeye Datawatch API and exposes resources and tools
-for interacting with data quality monitoring. It supports dynamic authentication
-through chat without requiring configuration files.
+for interacting with data quality monitoring. Credentials are provided via
+environment variables from Claude Desktop configuration.
 """
 
 from mcp.server.fastmcp import FastMCP, Context
@@ -23,21 +23,16 @@ from lineage_tracker import AgentLineageTracker
 mcp = FastMCP(
     "Bigeye API",
     instructions="""
-    IMPORTANT: Authentication Required
+    Bigeye Data Observability Platform Integration
     
-    Before using any Bigeye tools, you MUST ensure you are authenticated:
+    This server provides tools for interacting with Bigeye's data quality monitoring:
+    - Query and manage data quality issues
+    - Analyze data lineage and dependencies
+    - Track AI agent data access patterns
+    - Perform root cause analysis
     
-    1. First, check the authentication status using the 'bigeye://auth/status' resource
-    2. If not authenticated, use the 'authenticate_bigeye' tool to authenticate
-    3. The server uses environment variables for authentication by default
-    4. Only after successful authentication should you use other Bigeye tools
-    
-    If any tool returns an authentication error:
-    - Check authentication status
-    - Re-authenticate if needed
-    - Then retry the operation
-    
-    This ensures all operations are performed with valid credentials and proper access.
+    The server is pre-configured with credentials from environment variables.
+    All tools are ready to use immediately.
     """
 )
 
@@ -61,7 +56,7 @@ if config.get("workspace_id") and config.get("api_key"):
         config["workspace_id"],
         config["api_key"]
     )
-    debug_print(f"Auth client initialized with workspace ID: {auth_client.current_workspace_id}")
+    debug_print(f"Auth client initialized with workspace ID: {config.get('workspace_id')}")
 api_client = BigeyeAPIClient(
     api_url=config["api_url"],
     api_key=config["api_key"]
@@ -81,292 +76,31 @@ def get_api_client() -> BigeyeAPIClient:
 @mcp.resource("bigeye://auth/status")
 async def auth_status() -> str:
     """Current authentication status"""
-    workspace_id = auth_client.current_workspace_id or config.get('workspace_id')
+    workspace_id = config.get('workspace_id')
+    if not workspace_id or not config.get('api_key'):
+        return """ERROR: Bigeye credentials not configured.
+        
+Please configure credentials in your Claude Desktop config file.
+See README for setup instructions."""
+    
     return f"""Connected to Bigeye:
 - Instance: {config['api_url']}
-- Workspace ID: {workspace_id} (REQUIRED for lineage tools)
-- Status: ✓ Authenticated via environment variables
-- Note: Always use workspace ID {workspace_id} when calling lineage_find_node"""
+- Workspace ID: {workspace_id}
+- Status: ✓ Authenticated via environment variables"""
 
-# Main authentication tool
-@mcp.tool()
-async def authenticate_bigeye(
-    api_key: str,
-    instance: str = "https://app.bigeye.com",
-    workspace_id: Optional[int] = None,
-    save_credentials: bool = True
-) -> Dict[str, Any]:
-    """
-    Authenticate with Bigeye using an API key.
-    
-    If workspace_id is not provided, will return a list of available workspaces.
-    
-    Args:
-        api_key: Your Bigeye API key
-        instance: Bigeye instance URL (e.g., "demo.bigeye.com", "app.bigeye.com", or full URL)
-        workspace_id: Specific workspace to connect to (optional)
-        save_credentials: Whether to save credentials for future use
-    """
-    # Normalize instance URL
-    instance = instance.rstrip('/').lower()
-    
-    # Handle common instance names
-    if instance in ['demo', 'demo.bigeye.com']:
-        instance = 'https://demo.bigeye.com'
-    elif instance in ['app', 'app.bigeye.com', 'prod', 'production']:
-        instance = 'https://app.bigeye.com'
-    elif instance == 'staging' or instance == 'staging.bigeye.com':
-        instance = 'https://staging.bigeye.com'
-    elif not instance.startswith('http://') and not instance.startswith('https://'):
-        # Add https:// to any other domain-like input
-        instance = f'https://{instance}'
-    
-    # Test authentication
-    try:
-        auth_result = await auth_client.test_authentication(instance, api_key)
-        
-        # Ensure auth_result is a dictionary
-        if not isinstance(auth_result, dict):
-            return {
-                'success': False,
-                'error': f'Invalid authentication response type: {type(auth_result)}',
-                'hint': 'Internal error - authentication returned unexpected format'
-            }
-        
-        if not auth_result.get('valid', False):
-            return {
-                'success': False,
-                'error': auth_result.get('error', 'Unknown authentication error'),
-                'hint': 'Please check your API key and instance URL'
-            }
-    except Exception as e:
-        return {
-            'success': False,
-            'error': f'Authentication failed: {str(e)}',
-            'hint': 'Please check your network connection and credentials'
-        }
-    
-    # Discover workspaces
-    workspaces = await auth_client.discover_workspaces(instance, api_key)
-    
-    if not workspaces:
-        return {
-            'success': False,
-            'error': 'No workspaces found or unable to list workspaces'
-        }
-    
-    # If workspace_id provided, validate and use it
-    if workspace_id:
-        workspace = next((w for w in workspaces if w['id'] == workspace_id), None)
-        if not workspace:
-            return {
-                'success': False,
-                'error': f'Workspace {workspace_id} not found',
-                'available_workspaces': [{'id': w['id'], 'name': w['name']} for w in workspaces]
-            }
-        
-        # Set credentials
-        debug_print(f"Setting credentials - Instance: {instance}, Workspace: {workspace_id}")
-        auth_client.set_credentials(instance, workspace_id, api_key)
-        debug_print(f"Credentials set - Current workspace: {auth_client.current_workspace_id}")
-        
-        # Save if requested
-        if save_credentials:
-            auth_client.storage.save_credentials(instance, workspace_id, api_key)
-        
-        return {
-            'success': True,
-            'authenticated': True,
-            'instance': instance,
-            'workspace': {
-                'id': workspace['id'],
-                'name': workspace['name']
-            },
-            'user': auth_result['user'],
-            'credentials_saved': save_credentials
-        }
-    
-    # No workspace specified - return list
-    return {
-        'success': True,
-        'authenticated': False,
-        'message': 'Authentication successful. Please select a workspace:',
-        'available_workspaces': [
-            {
-                'id': w['id'],
-                'name': w['name'],
-                'description': w.get('description', '')
-            }
-            for w in workspaces
-        ],
-        'hint': 'Call authenticate_bigeye again with workspace_id parameter'
-    }
+# Note: Dynamic authentication has been removed.
+# Credentials must be provided via environment variables.
 
-@mcp.tool()
-async def use_saved_credentials(
-    instance: str,
-    workspace_id: int
-) -> Dict[str, Any]:
-    """
-    Use previously saved credentials for a Bigeye instance and workspace.
-    """
-    api_key = auth_client.storage.get_credentials(instance, workspace_id)
-    
-    if not api_key:
-        return {
-            'success': False,
-            'error': f'No saved credentials for {instance} workspace {workspace_id}'
-        }
-    
-    # Test that credentials still work
-    auth_result = await auth_client.test_authentication(instance, api_key)
-    
-    if auth_result['valid']:
-        auth_client.set_credentials(instance, workspace_id, api_key)
-        return {
-            'success': True,
-            'message': f'Connected to {instance} workspace {workspace_id}',
-            'user': auth_result['user']
-        }
-    else:
-        return {
-            'success': False,
-            'error': 'Saved credentials are no longer valid',
-            'hint': 'Please authenticate again with a new API key'
-        }
 
-@mcp.tool()
-async def switch_workspace(workspace_id: int) -> Dict[str, Any]:
-    """
-    Switch to a different workspace in the current Bigeye instance.
-    """
-    if not auth_client.is_authenticated:
-        return {
-            'success': False,
-            'error': 'Not authenticated. Please authenticate first.'
-        }
-    
-    # Check if we have saved credentials for this workspace
-    saved_key = auth_client.storage.get_credentials(
-        auth_client.current_instance, 
-        workspace_id
-    )
-    
-    if saved_key:
-        # Use saved credentials
-        auth_client.set_credentials(
-            auth_client.current_instance,
-            workspace_id,
-            saved_key
-        )
-        return {
-            'success': True,
-            'message': f'Switched to workspace {workspace_id} using saved credentials'
-        }
-    
-    # Try with current API key
-    workspaces = await auth_client.discover_workspaces(
-        auth_client.current_instance,
-        auth_client.api_key
-    )
-    
-    workspace = next((w for w in workspaces if w['id'] == workspace_id), None)
-    
-    if workspace:
-        auth_client.current_workspace_id = workspace_id
-        # Save these credentials too
-        auth_client.storage.save_credentials(
-            auth_client.current_instance,
-            workspace_id,
-            auth_client.api_key
-        )
-        return {
-            'success': True,
-            'message': f'Switched to workspace: {workspace["name"]}'
-        }
-    else:
-        return {
-            'success': False,
-            'error': f'Workspace {workspace_id} not accessible with current credentials'
-        }
+# Workspace switching removed - use environment variables
 
-@mcp.tool()
-async def list_workspaces() -> Dict[str, Any]:
-    """
-    List all available workspaces in the current Bigeye instance.
-    """
-    if not auth_client.api_key or not auth_client.current_instance:
-        # Check for any saved credentials
-        saved = auth_client.storage.list_saved_credentials()
-        if saved:
-            return {
-                'authenticated': False,
-                'saved_credentials': saved,
-                'message': 'Not authenticated. Use saved credentials or authenticate with API key.'
-            }
-        else:
-            return {
-                'authenticated': False,
-                'message': 'Not authenticated. Please provide API key.'
-            }
-    
-    workspaces = await auth_client.discover_workspaces(
-        auth_client.current_instance,
-        auth_client.api_key
-    )
-    
-    return {
-        'authenticated': True,
-        'current_workspace_id': auth_client.current_workspace_id,
-        'workspaces': [
-            {
-                'id': w['id'],
-                'name': w['name'],
-                'description': w.get('description', ''),
-                'is_current': w['id'] == auth_client.current_workspace_id
-            }
-            for w in workspaces
-        ]
-    }
 
-@mcp.tool()
-async def forget_credentials(
-    instance: Optional[str] = None,
-    workspace_id: Optional[int] = None
-) -> Dict[str, Any]:
-    """
-    Remove saved credentials. If no parameters, removes all saved credentials.
-    """
-    auth_client.storage.delete_credentials(instance, workspace_id)
-    
-    if instance is None and workspace_id is None:
-        return {
-            'success': True,
-            'message': 'All saved credentials have been removed'
-        }
-    elif instance and workspace_id:
-        return {
-            'success': True,
-            'message': f'Removed credentials for {instance} workspace {workspace_id}'
-        }
-    elif instance:
-        return {
-            'success': True,
-            'message': f'Removed all credentials for {instance}'
-        }
-    else:
-        return {
-            'success': False,
-            'message': 'Invalid parameters. Specify both instance and workspace_id, just instance, or neither.'
-        }
+
 
 # Resources
 @mcp.resource("bigeye://health")
 async def get_health_resource() -> str:
     """Get the health status of the Bigeye API."""
-    if not auth_client.is_authenticated:
-        return "Not authenticated. Use authenticate_bigeye tool first."
-    
     client = get_api_client()
     try:
         result = await client.check_health()
@@ -377,31 +111,23 @@ async def get_health_resource() -> str:
 @mcp.resource("bigeye://config")
 def get_config_resource() -> Dict[str, Any]:
     """Get the current configuration for the Bigeye API connector."""
-    if not auth_client.is_authenticated:
-        return {
-            "authenticated": False,
-            "message": "Not authenticated. Use authenticate_bigeye tool first."
-        }
-    
     return {
-        "authenticated": True,
-        "instance": auth_client.current_instance,
-        "workspace_id": auth_client.current_workspace_id,
-        "api_base_url": auth_client.api_base_url
+        "authenticated": bool(config.get('api_key')),
+        "instance": config['api_url'],
+        "workspace_id": config.get('workspace_id'),
+        "api_base_url": f"{config['api_url']}/api/v1"
     }
 
 @mcp.resource("bigeye://issues")
 async def get_issues_resource() -> Dict[str, Any]:
     """Get all issues from the configured workspace."""
-    if not auth_client.is_authenticated:
-        return {
-            "error": True,
-            "message": "Not authenticated. Use authenticate_bigeye tool first."
-        }
-    
     client = get_api_client()
-    debug_print(f"Fetching all issues for workspace {auth_client.current_workspace_id}")
-    result = await client.fetch_issues(workspace_id=auth_client.current_workspace_id)
+    workspace_id = config.get('workspace_id')
+    if not workspace_id:
+        return {"error": "No workspace ID configured"}
+    
+    debug_print(f"Fetching all issues for workspace {workspace_id}")
+    result = await client.fetch_issues(workspace_id=workspace_id)
     
     issue_count = len(result.get("issues", []))
     debug_print(f"Found {issue_count} issues")
@@ -412,11 +138,6 @@ async def get_issues_resource() -> Dict[str, Any]:
 @mcp.tool()
 async def check_health() -> Dict[str, Any]:
     """Check the health of the Bigeye API."""
-    if not auth_client.is_authenticated:
-        return {
-            'error': 'Not authenticated',
-            'hint': 'Use authenticate_bigeye tool first'
-        }
     
     client = get_api_client()
     debug_print("Checking API health")
@@ -433,9 +154,6 @@ async def get_issues(
 ) -> Dict[str, Any]:
     """Get issues from the Bigeye API.
     
-    IMPORTANT: Requires authentication. Use 'authenticate_bigeye' tool first if not authenticated.
-    Check authentication status with 'bigeye://auth/status' resource.
-    
     Args:
         statuses: Optional list of issue statuses to filter by. Possible values:
             - ISSUE_STATUS_NEW
@@ -450,29 +168,19 @@ async def get_issues(
     Returns:
         Dictionary containing the issues
     """
-    if not auth_client.is_authenticated:
-        return {
-            'error': 'Not authenticated',
-            'hint': 'Use authenticate_bigeye tool first'
-        }
     
     client = get_api_client()
-    workspace_id = auth_client.current_workspace_id
+    workspace_id = config.get('workspace_id')
     
     # Safety check
     if not workspace_id:
         return {
-            'error': 'Workspace ID not set',
-            'hint': 'Authentication may be incomplete. Try re-authenticating.',
-            'auth_state': {
-                'instance': auth_client.current_instance,
-                'has_api_key': bool(auth_client.api_key),
-                'workspace_id': workspace_id
-            }
+            'error': 'Workspace ID not configured',
+            'hint': 'Check your Claude Desktop configuration'
         }
     
     debug_print(f"Fetching issues for workspace {workspace_id}")
-    debug_print(f"Auth client state - Instance: {auth_client.current_instance}, Workspace: {workspace_id}, Has API key: {bool(auth_client.api_key)}")
+    debug_print(f"Config state - Instance: {config['api_url']}, Workspace: {workspace_id}, Has API key: {bool(config.get('api_key'))}")
     
     if statuses:
         debug_print(f"Filtering by statuses: {statuses}")
@@ -529,14 +237,9 @@ async def get_table_issues(
             statuses=["ISSUE_STATUS_NEW"]
         )
     """
-    if not auth_client.is_authenticated:
-        return {
-            'error': 'Not authenticated',
-            'hint': 'Use authenticate_bigeye tool first'
-        }
     
     client = get_api_client()
-    workspace_id = auth_client.current_workspace_id
+    workspace_id = config.get('workspace_id')
     
     # Safety check
     if not workspace_id:
@@ -613,14 +316,9 @@ async def analyze_table_data_quality(
             schema_name="PROD_REPL"
         )
     """
-    if not auth_client.is_authenticated:
-        return {
-            'error': 'Not authenticated',
-            'hint': 'Use authenticate_bigeye tool first'
-        }
     
     client = get_api_client()
-    workspace_id = auth_client.current_workspace_id
+    workspace_id = config.get('workspace_id')
     
     if not workspace_id:
         return {
@@ -723,7 +421,6 @@ async def merge_issues(
 ) -> Dict[str, Any]:
     """Merge multiple issues into a single incident.
     
-    IMPORTANT: Requires authentication. Use 'authenticate_bigeye' tool first if not authenticated.
     
     This tool can either create a new incident or merge issues into an existing incident.
     
@@ -737,11 +434,6 @@ async def merge_issues(
     Returns:
         Dictionary containing the merge response with the created/updated incident
     """
-    if not auth_client.is_authenticated:
-        return {
-            'error': 'Not authenticated',
-            'hint': 'Use authenticate_bigeye tool first'
-        }
     
     # Validation
     min_issues = 1 if existing_incident_id else 2
@@ -764,7 +456,7 @@ async def merge_issues(
     try:
         result = await client.merge_issues(
             issue_ids=issue_ids,
-            workspace_id=auth_client.current_workspace_id,
+            workspace_id=config.get('workspace_id'),
             existing_incident_id=existing_incident_id,
             incident_name=incident_name
         )
@@ -792,11 +484,6 @@ async def get_issue_resolution_steps(
     Returns:
         Dictionary containing the resolution steps for the issue
     """
-    if not auth_client.is_authenticated:
-        return {
-            'error': 'Not authenticated',
-            'hint': 'Use authenticate_bigeye tool first'
-        }
     
     client = get_api_client()
     debug_print(f"Fetching resolution steps for issue ID: {issue_id}")
@@ -846,11 +533,6 @@ async def update_issue(
     Returns:
         Dictionary containing the API response with the updated issue information
     """
-    if not auth_client.is_authenticated:
-        return {
-            'error': 'Not authenticated',
-            'hint': 'Use authenticate_bigeye tool first'
-        }
     
     # Validation
     if new_status == "ISSUE_STATUS_CLOSED" and not closing_label:
@@ -904,11 +586,6 @@ async def unmerge_issues(
     Returns:
         Dictionary containing the unmerge response with success/failure details
     """
-    if not auth_client.is_authenticated:
-        return {
-            'error': 'Not authenticated',
-            'hint': 'Use authenticate_bigeye tool first'
-        }
     
     # Validation
     if not issue_ids and not parent_issue_ids:
@@ -918,11 +595,11 @@ async def unmerge_issues(
         }
     
     client = get_api_client()
-    debug_print(f"Unmerging issues in workspace {auth_client.current_workspace_id}")
+    debug_print(f"Unmerging issues in workspace {config.get('workspace_id')}")
     
     try:
         result = await client.unmerge_issues(
-            workspace_id=auth_client.current_workspace_id,
+            workspace_id=config.get('workspace_id'),
             issue_ids=issue_ids,
             parent_issue_ids=parent_issue_ids,
             assignee_id=assignee_id,
@@ -960,11 +637,6 @@ async def lineage_get_graph(
     Returns:
         Dictionary containing the complete lineage graph
     """
-    if not auth_client.is_authenticated:
-        return {
-            'error': 'Not authenticated',
-            'hint': 'Use authenticate_bigeye tool first'
-        }
     
     client = get_api_client()
     debug_print(f"Getting lineage graph for node {node_id}, direction: {direction}")
@@ -998,11 +670,6 @@ async def lineage_get_node(
     Returns:
         Dictionary containing the lineage node details
     """
-    if not auth_client.is_authenticated:
-        return {
-            'error': 'Not authenticated',
-            'hint': 'Use authenticate_bigeye tool first'
-        }
     
     client = get_api_client()
     debug_print(f"Getting details for lineage node {node_id}")
@@ -1033,11 +700,6 @@ async def lineage_get_node_issues(
     Returns:
         Dictionary containing all issues for the lineage node
     """
-    if not auth_client.is_authenticated:
-        return {
-            'error': 'Not authenticated',
-            'hint': 'Use authenticate_bigeye tool first'
-        }
     
     client = get_api_client()
     debug_print(f"Getting issues for lineage node {node_id}")
@@ -1071,11 +733,6 @@ async def lineage_analyze_upstream_causes(
     Returns:
         Dictionary containing root cause analysis
     """
-    if not auth_client.is_authenticated:
-        return {
-            'error': 'Not authenticated',
-            'hint': 'Use authenticate_bigeye tool first'
-        }
     
     debug_print(f"Analyzing upstream root causes for node {node_id}")
     
@@ -1182,11 +839,6 @@ async def lineage_analyze_downstream_impact(
     Returns:
         Dictionary containing impact analysis
     """
-    if not auth_client.is_authenticated:
-        return {
-            'error': 'Not authenticated',
-            'hint': 'Use authenticate_bigeye tool first'
-        }
     
     debug_print(f"Analyzing downstream impact for node {node_id}")
     
@@ -1313,11 +965,6 @@ async def lineage_trace_issue_path(
     Returns:
         Dictionary containing comprehensive lineage analysis
     """
-    if not auth_client.is_authenticated:
-        return {
-            'error': 'Not authenticated',
-            'hint': 'Use authenticate_bigeye tool first'
-        }
     
     debug_print(f"Tracing lineage path for issue {issue_id}")
     
@@ -1424,116 +1071,30 @@ async def lineage_trace_issue_path(
         }
 
 # Prompts
-@mcp.prompt()
-def authentication_flow() -> str:
-    """Guide for authenticating with Bigeye."""
-    return """
-    # Authenticating with Bigeye
-    
-    This MCP server supports dynamic authentication without configuration files.
-    
-    ## First Time Authentication
-    
-    1. Get your API key from Bigeye (Settings > API Keys)
-    2. Authenticate with your instance:
-    
-    ```python
-    # For app.bigeye.com (default)
-    result = await authenticate_bigeye(api_key="your_api_key_here")
-    
-    # For demo.bigeye.com - you can use any of these formats:
-    result = await authenticate_bigeye(
-        api_key="your_api_key_here",
-        instance="demo"  # Automatically converts to https://demo.bigeye.com
-    )
-    # OR
-    result = await authenticate_bigeye(
-        api_key="your_api_key_here",
-        instance="demo.bigeye.com"  # Automatically adds https://
-    )
-    # OR
-    result = await authenticate_bigeye(
-        api_key="your_api_key_here",
-        instance="https://demo.bigeye.com"  # Full URL also works
-    )
-    ```
-    
-    ## Common Instance Names
-    
-    The tool automatically handles these common instances:
-    - "demo" or "demo.bigeye.com" → https://demo.bigeye.com
-    - "app", "app.bigeye.com", "prod", or "production" → https://app.bigeye.com
-    - "staging" or "staging.bigeye.com" → https://staging.bigeye.com
-    - Any other domain → automatically adds https://
-    
-    3. Select a workspace from the returned list:
-    
-    ```python
-    # Authenticate with specific workspace
-    result = await authenticate_bigeye(
-        api_key="your_api_key_here",
-        workspace_id=123456
-    )
-    ```
-    
-    ## Using Saved Credentials
-    
-    Once authenticated, credentials are saved securely for future use:
-    
-    ```python
-    # List available saved credentials
-    workspaces = await list_workspaces()
-    
-    # Use saved credentials
-    result = await use_saved_credentials(
-        instance="https://app.bigeye.com",
-        workspace_id=123456
-    )
-    ```
-    
-    ## Switching Workspaces
-    
-    ```python
-    # Switch to a different workspace in the same instance
-    result = await switch_workspace(workspace_id=789012)
-    ```
-    
-    ## Managing Credentials
-    
-    ```python
-    # Remove specific credentials
-    await forget_credentials(
-        instance="https://demo.bigeye.com",
-        workspace_id=123456
-    )
-    
-    # Remove all saved credentials
-    await forget_credentials()
-    ```
-    """
 
 @mcp.prompt()
 def check_connection_info() -> str:
     """Check the connection to Bigeye API."""
     return """
-    Let's check if the Bigeye API connection is working:
-
+    The Bigeye MCP server is pre-configured with credentials from your Claude Desktop configuration.
+    
+    To verify the connection:
     ```python
-    # Check authentication status
+    # Check current status
     auth_status = await read_resource("bigeye://auth/status")
     print(auth_status)
     
-    # If authenticated, check the current configuration
-    config = await read_resource("bigeye://config")
-    print(f"Instance: {config.get('instance')}")
-    print(f"Workspace ID: {config.get('workspace_id')}")
+    # Check health
+    health = await check_health()
+    print(f"API Health: {health}")
     
-    # Check health status
-    health_status = await check_health()
-    print(f"Health status: {health_status}")
+    # Get issues to verify access
+    issues = await get_issues(page_size=5)
+    print(f"Found {len(issues.get('issues', []))} issues")
     ```
-
-    The authentication is dynamic - no environment variables or config files required!
+    
+    All credentials are managed via your Claude Desktop config file.
+    No manual authentication is needed.
     """
 
 @mcp.prompt()
@@ -1667,11 +1228,6 @@ async def lineage_track_data_access(
             "SALES.PUBLIC.CUSTOMERS.customer_name"
         ])
     """
-    if not auth_client.is_authenticated:
-        return {
-            'error': 'Not authenticated',
-            'hint': 'Use authenticate_bigeye tool first'
-        }
     
     if not lineage_tracker:
         return {
@@ -1713,11 +1269,6 @@ async def lineage_get_tracking_status() -> Dict[str, Any]:
     Returns:
         Dictionary containing tracking status and tracked assets
     """
-    if not auth_client.is_authenticated:
-        return {
-            'error': 'Not authenticated',
-            'hint': 'Use authenticate_bigeye tool first'
-        }
     
     if not lineage_tracker:
         return {
@@ -1769,11 +1320,6 @@ async def lineage_commit_agent(
         result = await commit_agent_lineage()
         print(f"Created {result['edges_created']} lineage edges")
     """
-    if not auth_client.is_authenticated:
-        return {
-            'error': 'Not authenticated',
-            'hint': 'Use authenticate_bigeye tool first'
-        }
     
     if not lineage_tracker:
         return {
@@ -1807,11 +1353,6 @@ async def lineage_clear_tracked_assets() -> Dict[str, Any]:
     Returns:
         Dictionary confirming the clear operation
     """
-    if not auth_client.is_authenticated:
-        return {
-            'error': 'Not authenticated',
-            'hint': 'Use authenticate_bigeye tool first'
-        }
     
     if not lineage_tracker:
         return {
@@ -1860,11 +1401,6 @@ async def lineage_cleanup_agent_edges(
         result = await cleanup_agent_lineage_edges(retention_days=7)
         print(f"Deleted {result['edges_deleted']} old edges")
     """
-    if not auth_client.is_authenticated:
-        return {
-            'error': 'Not authenticated',
-            'hint': 'Use authenticate_bigeye tool first'
-        }
     
     if not lineage_tracker:
         return {
@@ -1891,7 +1427,6 @@ async def lineage_find_node(
 ) -> Dict[str, Any]:
     """Find lineage nodes and get their IDs using Bigeye's advanced search.
     
-    IMPORTANT: Requires authentication. Use 'authenticate_bigeye' tool first if not authenticated.
     You must provide the workspace_id - check bigeye://auth/status for the current workspace ID.
     
     This tool uses Bigeye's path-based search to find nodes in the lineage graph.
@@ -1944,13 +1479,8 @@ async def lineage_find_node(
     debug_print(f"  node_type: {node_type}")
     debug_print(f"  limit: {limit}")
     debug_print(f"  auth_client.is_authenticated: {auth_client.is_authenticated}")
-    debug_print(f"  auth_client.current_workspace_id: {auth_client.current_workspace_id}")
+    debug_print(f"  config.get('workspace_id'): {config.get('workspace_id')}")
     
-    if not auth_client.is_authenticated:
-        return {
-            'error': 'Not authenticated',
-            'hint': 'Use authenticate_bigeye tool first'
-        }
     
     client = get_api_client()
     if not client:
@@ -2073,11 +1603,6 @@ async def lineage_explore_catalog(
         # Find tables with "ORDER" in the name
         await explore_catalog_tables(search_term="ORDER")
     """
-    if not auth_client.is_authenticated:
-        return {
-            'error': 'Not authenticated',
-            'hint': 'Use authenticate_bigeye tool first'
-        }
     
     client = get_api_client()
     if not client:
@@ -2086,7 +1611,7 @@ async def lineage_explore_catalog(
     try:
         # Get tables from catalog
         result = await client.get_catalog_tables(
-            workspace_id=auth_client.current_workspace_id,
+            workspace_id=config.get('workspace_id'),
             schema_name=schema_name,
             warehouse_name=warehouse_name,
             page_size=page_size
@@ -2157,11 +1682,6 @@ async def lineage_delete_node(
         # Force delete even with edges
         result = await lineage_delete_node(node_id=12345, force=True)
     """
-    if not auth_client.is_authenticated:
-        return {
-            'error': 'Not authenticated',
-            'hint': 'Use authenticate_bigeye tool first'
-        }
     
     client = get_api_client()
     if not client:
