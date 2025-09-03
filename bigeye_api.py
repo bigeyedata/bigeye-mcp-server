@@ -48,26 +48,38 @@ class BigeyeAPIClient:
             # don't change this to Bearer, it's apikey
             headers["Authorization"] = f"apikey {self.api_key}"
         
+        # Verbose logging for ALL requests
+        print(f"\n[BIGEYE API VERBOSE] === REQUEST DETAILS ===", file=sys.stderr)
+        print(f"[BIGEYE API VERBOSE] Method: {method}", file=sys.stderr)
+        print(f"[BIGEYE API VERBOSE] URL: {url}", file=sys.stderr)
+        print(f"[BIGEYE API VERBOSE] Headers: {headers}", file=sys.stderr)
+        print(f"[BIGEYE API VERBOSE] Query params: {params}", file=sys.stderr)
+        print(f"[BIGEYE API VERBOSE] JSON body: {json_data}", file=sys.stderr)
+        
+        # If we have params, construct the full URL with query string
+        if params:
+            from urllib.parse import urlencode
+            query_string = urlencode(params)
+            full_url = f"{url}?{query_string}"
+            print(f"[BIGEYE API VERBOSE] Full URL with params: {full_url}", file=sys.stderr)
+        
         # Create httpx client with timeout
         async with httpx.AsyncClient(timeout=timeout) as client:
             try:
                 if method == "GET":
                     response = await client.get(url, headers=headers, params=params)
                 elif method == "POST":
-                    # Enhanced debug logging for POST requests
-                    if "/lineage/search" in url:
-                        print(f"[BIGEYE API DEBUG] === POST REQUEST ===", file=sys.stderr)
-                        print(f"[BIGEYE API DEBUG] URL: {url}", file=sys.stderr)
-                        print(f"[BIGEYE API DEBUG] Headers: {headers}", file=sys.stderr)
-                        print(f"[BIGEYE API DEBUG] json_data: {json_data}", file=sys.stderr)
-                        print(f"[BIGEYE API DEBUG] params: {params}", file=sys.stderr)
-                        print(f"[BIGEYE API DEBUG] Using: {'json_data' if json_data else 'params'}", file=sys.stderr)
-                        
+                    # For search endpoint, add extra debugging
+                    if "/api/v1/search" in url:
+                        print(f"[BIGEYE API VERBOSE] SEARCH ENDPOINT DETECTED", file=sys.stderr)
                         import json as json_module
                         if json_data:
-                            print(f"[BIGEYE API DEBUG] JSON string being sent: {json_module.dumps(json_data)}", file=sys.stderr)
+                            json_str = json_module.dumps(json_data, indent=2)
+                            print(f"[BIGEYE API VERBOSE] JSON being sent:\n{json_str}", file=sys.stderr)
+                        if params:
+                            print(f"[BIGEYE API VERBOSE] Query params being sent: {params}", file=sys.stderr)
                     
-                    response = await client.post(url, headers=headers, json=json_data or params)
+                    response = await client.post(url, headers=headers, params=params, json=json_data)
                 elif method == "PUT":
                     response = await client.put(url, headers=headers, json=json_data or params)
                 elif method == "DELETE":
@@ -75,16 +87,22 @@ class BigeyeAPIClient:
                 else:
                     raise ValueError(f"Unsupported method: {method}")
                 
-                print(f"[BIGEYE API DEBUG] Response status: {response.status_code}", file=sys.stderr)
+                print(f"[BIGEYE API VERBOSE] Response status: {response.status_code}", file=sys.stderr)
+                print(f"[BIGEYE API VERBOSE] Response headers: {dict(response.headers)}", file=sys.stderr)
+                
+                # Always log the raw response text for debugging
+                raw_response = response.text
+                print(f"[BIGEYE API VERBOSE] Raw response body: {raw_response[:1000]}..." if len(raw_response) > 1000 else f"[BIGEYE API VERBOSE] Raw response body: {raw_response}", file=sys.stderr)
                 
                 try:
                     if response.status_code >= 400:
+                        print(f"[BIGEYE API VERBOSE] ERROR RESPONSE DETECTED", file=sys.stderr)
                         error_response = {
                             "error": True,
                             "status_code": response.status_code,
                             "message": response.text
                         }
-                        print(f"[BIGEYE API DEBUG] Error response: {error_response}", file=sys.stderr)
+                        print(f"[BIGEYE API VERBOSE] Returning error: {error_response}", file=sys.stderr)
                         return error_response
                     
                     result = response.json()
@@ -936,7 +954,7 @@ class BigeyeAPIClient:
     
     async def search(
         self,
-        workspace_id: int,
+        workspace_id: Optional[int] = None,  # Not used - workspace context comes from API key
         search_term: Optional[str] = None,
         types: Optional[List[Dict[str, Any]]] = None,
         limit: int = 100
@@ -946,7 +964,7 @@ class BigeyeAPIClient:
         This implements the main search functionality used by the Bigeye UI.
         
         Args:
-            workspace_id: The workspace ID
+            workspace_id: Not used - workspace context comes from API key
             search_term: Optional search string to filter results
             types: Optional list of types to filter by. Each type is a dict with either:
                    - {"system_search_type": "SYSTEM_SEARCH_TYPE_COLLECTION"} for collections
@@ -995,18 +1013,12 @@ class BigeyeAPIClient:
         if limit:
             body["limit"] = limit
             
-        # Add workspace_id as query parameter
-        params = {
-            "workspaceId": workspace_id
-        }
-            
+        # No workspace_id in params or body - it comes from API key context
         print(f"[BIGEYE API DEBUG] Search request body: {body}", file=sys.stderr)
-        print(f"[BIGEYE API DEBUG] Search params: {params}", file=sys.stderr)
         
         return await self.make_request(
             "/api/v1/search",
             method="POST",
-            params=params,
             json_data=body
         )
         
