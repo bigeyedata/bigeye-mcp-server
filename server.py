@@ -235,6 +235,10 @@ async def get_table_issues(
 ) -> Dict[str, Any]:
     """Get data quality issues for a specific table.
     
+    IMPORTANT: Before using this tool, you should use search_tables() to find and confirm
+    the exact table the user is referring to. Only use this tool AFTER the user has
+    confirmed which specific table they mean.
+    
     This tool fetches all issues related to a specific table in Bigeye,
     making it easier to check data quality for individual tables.
     
@@ -321,6 +325,10 @@ async def analyze_table_data_quality(
     warehouse_name: Optional[str] = None
 ) -> Dict[str, Any]:
     """Analyze data quality for a specific table including issues and metrics.
+    
+    IMPORTANT: Before using this tool, you MUST use search_tables() first to find 
+    and confirm the exact table the user is referring to. Only use this tool AFTER 
+    the user has confirmed which specific table they mean.
     
     This comprehensive tool checks:
     1. If the table exists in Bigeye's catalog
@@ -1852,7 +1860,10 @@ async def search_tables(
 ) -> Dict[str, Any]:
     """Search for tables in Bigeye.
     
-    This tool searches for database tables by name, schema, and/or warehouse.
+    ALWAYS USE THIS TOOL FIRST when a user asks about a table by name!
+    This tool searches for database tables and helps identify the exact table
+    the user is referring to. Present the results to the user and ask them to
+    confirm which table they meant before using any other table-related tools.
     
     Args:
         table_name: Optional table name to search for (supports partial matching)
@@ -1944,7 +1955,10 @@ async def search_columns(
 ) -> Dict[str, Any]:
     """Search for columns in Bigeye.
     
-    This tool searches for database columns by name, table, schema, and/or warehouse.
+    ALWAYS USE THIS TOOL FIRST when a user asks about a column by name!
+    This tool searches for database columns and helps identify the exact column
+    the user is referring to. Present the results to the user and ask them to
+    confirm which column they meant before using any other column-related tools.
     
     Args:
         column_name: Optional column name to search for (supports partial matching)
