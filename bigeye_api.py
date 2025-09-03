@@ -933,6 +933,75 @@ class BigeyeAPIClient:
             method="DELETE",
             params=params if params else None
         )
+    
+    async def search(
+        self,
+        workspace_id: int,
+        search_term: Optional[str] = None,
+        types: Optional[List[Dict[str, Any]]] = None,
+        limit: int = 100
+    ) -> Dict[str, Any]:
+        """Search for schemas, tables, columns, issues, and other objects in Bigeye.
+        
+        This implements the main search functionality used by the Bigeye UI.
+        
+        Args:
+            workspace_id: The workspace ID
+            search_term: Optional search string to filter results
+            types: Optional list of types to filter by. Each type is a dict with either:
+                   - {"system_search_type": "SYSTEM_SEARCH_TYPE_COLLECTION"} for collections
+                   - {"system_search_type": "SYSTEM_SEARCH_TYPE_DELTA"} for deltas
+                   - {"system_search_type": "SYSTEM_SEARCH_TYPE_ISSUE"} for issues
+                   - {"data_node_type": "DATA_NODE_TYPE_TABLE"} for tables
+                   - {"data_node_type": "DATA_NODE_TYPE_COLUMN"} for columns
+                   - {"data_node_type": "DATA_NODE_TYPE_SCHEMA"} for schemas
+            limit: Maximum number of results to return (default: 100)
+            
+        Returns:
+            Dictionary containing search results with schemas, tables, columns, issues, etc.
+            
+        Example:
+            # Search for all objects with "orders" in the name
+            await search(workspace_id=123, search_term="orders")
+            
+            # Search only for tables
+            await search(
+                workspace_id=123,
+                search_term="orders",
+                types=[{"data_node_type": "DATA_NODE_TYPE_TABLE"}]
+            )
+        """
+        # Build the request body
+        body = {}
+        
+        if search_term:
+            body["search"] = search_term
+            
+        if types:
+            # Convert types to the expected format
+            formatted_types = []
+            for type_spec in types:
+                if "system_search_type" in type_spec:
+                    formatted_types.append({
+                        "systemSearchType": type_spec["system_search_type"]
+                    })
+                elif "data_node_type" in type_spec:
+                    formatted_types.append({
+                        "dataNodeType": type_spec["data_node_type"]
+                    })
+            if formatted_types:
+                body["types"] = formatted_types
+                
+        if limit:
+            body["limit"] = limit
+            
+        print(f"[BIGEYE API DEBUG] Search request body: {body}", file=sys.stderr)
+        
+        return await self.make_request(
+            "/api/v1/search",
+            method="POST",
+            json_data=body
+        )
         
     async def search_lineage_v2(
         self,

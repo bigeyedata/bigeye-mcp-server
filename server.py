@@ -1752,6 +1752,190 @@ async def lineage_delete_node(
             "message": f"Error deleting lineage node: {str(e)}"
         }
 
+@mcp.tool()
+async def search(
+    search_term: Optional[str] = None,
+    object_types: Optional[List[str]] = None,
+    limit: int = 50
+) -> Dict[str, Any]:
+    """Search for schemas, tables, columns, issues, and other objects in Bigeye.
+    
+    This is the main search tool that allows you to find any object in Bigeye by name.
+    When a user asks about a table, column, schema, or other data asset, use this tool
+    to search for it and present the user with matching options.
+    
+    Args:
+        search_term: The text to search for (e.g., "orders", "customer", etc.)
+        object_types: Optional list of object types to filter by. Options include:
+            - "table" or "tables" - Search for tables
+            - "column" or "columns" - Search for columns
+            - "schema" or "schemas" - Search for schemas
+            - "issue" or "issues" - Search for data quality issues
+            - "collection" or "collections" - Search for collections
+            - "delta" or "deltas" - Search for deltas
+            If not specified, searches all types.
+        limit: Maximum number of results to return (default: 50, max: 100)
+        
+    Returns:
+        Dictionary containing search results organized by type
+        
+    Example:
+        # When user asks "Tell me about the orders table"
+        results = await search(search_term="orders", object_types=["table"])
+        
+        # When user asks "What columns are in customer tables?"
+        results = await search(search_term="customer", object_types=["column"])
+        
+        # General search for anything related to sales
+        results = await search(search_term="sales")
+    """
+    
+    client = get_api_client()
+    workspace_id = config.get('workspace_id')
+    
+    if not workspace_id:
+        return {
+            'error': 'Workspace ID not configured',
+            'hint': 'Check your Claude Desktop configuration for BIGEYE_WORKSPACE_ID'
+        }
+    
+    debug_print(f"Searching for '{search_term}' with types: {object_types}")
+    
+    try:
+        # Convert friendly type names to API format
+        api_types = []
+        if object_types:
+            for obj_type in object_types:
+                type_lower = obj_type.lower()
+                if type_lower in ["table", "tables"]:
+                    api_types.append({"data_node_type": "DATA_NODE_TYPE_TABLE"})
+                elif type_lower in ["column", "columns"]:
+                    api_types.append({"data_node_type": "DATA_NODE_TYPE_COLUMN"})
+                elif type_lower in ["schema", "schemas"]:
+                    api_types.append({"data_node_type": "DATA_NODE_TYPE_SCHEMA"})
+                elif type_lower in ["issue", "issues"]:
+                    api_types.append({"system_search_type": "SYSTEM_SEARCH_TYPE_ISSUE"})
+                elif type_lower in ["collection", "collections"]:
+                    api_types.append({"system_search_type": "SYSTEM_SEARCH_TYPE_COLLECTION"})
+                elif type_lower in ["delta", "deltas"]:
+                    api_types.append({"system_search_type": "SYSTEM_SEARCH_TYPE_DELTA"})
+        
+        # Ensure limit is within bounds
+        limit = min(max(limit, 1), 100)
+        
+        # Call the search API
+        result = await client.search(
+            workspace_id=workspace_id,
+            search_term=search_term,
+            types=api_types if api_types else None,
+            limit=limit
+        )
+        
+        if result.get("error"):
+            return result
+            
+        # Process and organize results
+        organized_results = {
+            "search_term": search_term,
+            "total_results": 0,
+            "tables": [],
+            "columns": [],
+            "schemas": [],
+            "issues": [],
+            "collections": [],
+            "deltas": [],
+            "other": []
+        }
+        
+        results = result.get("results", [])
+        organized_results["total_results"] = len(results)
+        
+        for item in results:
+            result_item = item.get("result", {})
+            
+            # Check what type of result this is
+            if "tableNode" in result_item:
+                table = result_item["tableNode"]
+                organized_results["tables"].append({
+                    "id": table.get("id"),
+                    "name": table.get("name"),
+                    "schema": table.get("schema", {}).get("name") if table.get("schema") else None,
+                    "warehouse": table.get("warehouse", {}).get("name") if table.get("warehouse") else None,
+                    "full_name": f"{table.get('warehouse', {}).get('name', '')}.{table.get('schema', {}).get('name', '')}.{table.get('name', '')}" if table.get('warehouse') and table.get('schema') else table.get('name', '')
+                })
+            elif "columnNode" in result_item:
+                column = result_item["columnNode"]
+                table_info = column.get("table", {})
+                organized_results["columns"].append({
+                    "id": column.get("id"),
+                    "name": column.get("name"),
+                    "table": table_info.get("name"),
+                    "schema": table_info.get("schema", {}).get("name") if table_info.get("schema") else None,
+                    "warehouse": table_info.get("warehouse", {}).get("name") if table_info.get("warehouse") else None,
+                    "full_name": f"{table_info.get('name', '')}.{column.get('name', '')}"
+                })
+            elif "schemaNode" in result_item:
+                schema = result_item["schemaNode"]
+                organized_results["schemas"].append({
+                    "id": schema.get("id"),
+                    "name": schema.get("name"),
+                    "warehouse": schema.get("warehouse", {}).get("name") if schema.get("warehouse") else None,
+                    "full_name": f"{schema.get('warehouse', {}).get('name', '')}.{schema.get('name', '')}" if schema.get('warehouse') else schema.get('name', '')
+                })
+            elif "issue" in result_item:
+                issue = result_item["issue"]
+                organized_results["issues"].append({
+                    "id": issue.get("id"),
+                    "name": issue.get("name"),
+                    "status": issue.get("currentStatus"),
+                    "priority": issue.get("priority"),
+                    "table": issue.get("tableName"),
+                    "created_at": issue.get("createdAt")
+                })
+            elif "collection" in result_item:
+                collection = result_item["collection"]
+                organized_results["collections"].append({
+                    "id": collection.get("id"),
+                    "name": collection.get("name"),
+                    "description": collection.get("description")
+                })
+            elif "delta" in result_item:
+                delta = result_item["delta"]
+                organized_results["deltas"].append({
+                    "id": delta.get("id"),
+                    "name": delta.get("name")
+                })
+            else:
+                # Store any other result types
+                organized_results["other"].append(result_item)
+        
+        # Add summary information
+        summary_parts = []
+        if organized_results["tables"]:
+            summary_parts.append(f"{len(organized_results['tables'])} table(s)")
+        if organized_results["columns"]:
+            summary_parts.append(f"{len(organized_results['columns'])} column(s)")
+        if organized_results["schemas"]:
+            summary_parts.append(f"{len(organized_results['schemas'])} schema(s)")
+        if organized_results["issues"]:
+            summary_parts.append(f"{len(organized_results['issues'])} issue(s)")
+        if organized_results["collections"]:
+            summary_parts.append(f"{len(organized_results['collections'])} collection(s)")
+        if organized_results["deltas"]:
+            summary_parts.append(f"{len(organized_results['deltas'])} delta(s)")
+            
+        organized_results["summary"] = f"Found {', '.join(summary_parts)}" if summary_parts else "No results found"
+        
+        debug_print(f"Search complete: {organized_results['summary']}")
+        
+        return organized_results
+        
+    except Exception as e:
+        return {
+            "error": True,
+            "message": f"Error performing search: {str(e)}"
+        }
+
 # Run the server if executed directly
 if __name__ == "__main__":
     mcp.run()
