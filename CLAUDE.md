@@ -56,87 +56,62 @@ This workflow is enforced in tool descriptions with "ALWAYS USE THIS TOOL FIRST"
 
 #### Core Health & Issue Tools
 
-1. **check_data_health**
-   - Params: `table_name`, `schema_name`, `time_range`
-   - Returns: Current health status, active issues, metrics summary
-   - Purpose: Single comprehensive health check for a table
-
-2. **get_active_issues**
+1. **get_active_issues** (enhancement of existing `get_issues`)
    - Params: `severity_filter`, `schema_filter`, `owner_filter`, `time_window`
    - Returns: List of current data quality issues with details
    - Purpose: More focused than current get_issues with better filtering
+   - Note: Current `get_issues` exists but lacks advanced filtering
 
-3. **get_issue_details**
+2. **get_issue_details**
    - Params: `issue_id`
    - Returns: Full issue context including metric history, root cause suggestions
    - Purpose: Deep dive into a specific issue (separate from list view)
-
-#### Lineage-Aware Tools
-
-4. **trace_upstream_issues**
-   - Params: `table_identifier`, `max_depth`
-   - Returns: All upstream data quality issues affecting a table
-   - Purpose: Root cause analysis using lineage
-
-5. **assess_downstream_impact**
-   - Params: `table_identifier`, `issue_id`
-   - Returns: Downstream assets affected by quality issues
-   - Purpose: Impact analysis for prioritization
+   - Note: `get_issue_resolution_steps` exists but this would be more comprehensive
 
 #### Metric Management Tools
 
-6. **get_metric_coverage**
+3. **get_metric_coverage**
    - Params: `table_identifier`
    - Returns: What metrics are configured, gaps in coverage
    - Purpose: Identify monitoring blind spots
 
-7. **create_metric**
+4. **create_metric**
    - Params: `table_identifier`, `metric_type`, `configuration`
    - Returns: Created metric details
    - Purpose: Programmatically add monitoring
 
-8. **get_metric_history**
+5. **get_metric_history**
    - Params: `metric_id`, `time_range`
    - Returns: Historical metric values and anomalies
    - Purpose: Trend analysis and pattern detection
 
 #### Incident Management Tools
 
-9. **create_incident**
-   - Params: `issue_ids[]`, `incident_name`, `assignee`
-   - Returns: Incident tracking information
-   - Purpose: Group related issues for coordinated response
-
-10. **update_issue_status**
-    - Params: `issue_id`, `status`, `resolution_notes`
-    - Returns: Updated issue details
-    - Purpose: Streamlined issue workflow management
-
-11. **get_sla_compliance**
+6. **get_sla_compliance**
     - Params: `table_identifier`, `time_period`
     - Returns: Freshness/quality SLA adherence
     - Purpose: Track service level compliance
 
 #### Analytics & Reporting Tools
 
-12. **generate_quality_report**
+7. **generate_quality_report**
     - Params: `scope` (schema/owner/tag), `time_period`, `format`
     - Returns: Comprehensive quality metrics and trends
     - Purpose: Executive reporting and trending
 
-13. **get_anomaly_patterns**
+8. **get_anomaly_patterns**
     - Params: `table_identifier`, `lookback_period`
     - Returns: Recurring issues, seasonality patterns
     - Purpose: Identify systemic problems
 
 #### Integration Tools (Bigeye + Atlan)
 
-14. **validate_catalog_coverage**
+9. **validate_catalog_coverage**
     - Params: `atlan_catalog_filter`
     - Returns: Which catalog assets have/lack monitoring
     - Purpose: Ensure comprehensive monitoring coverage
 
-15. **enrich_issue_context**
+10. **enrich_issue_context**
     - Params: `issue_id`
     - Returns: Issue details enriched with Atlan metadata (owners, documentation, tags)
     - Purpose: Provide full context by combining both systems
