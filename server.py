@@ -12,6 +12,7 @@ import sys
 import json
 from typing import Optional, Dict, Any, List
 from pathlib import Path
+from datetime import datetime, timedelta
 
 # Import our modules
 from auth import BigeyeAuthClient
@@ -159,6 +160,223 @@ async def get_issues_resource() -> Dict[str, Any]:
     debug_print(f"Found {issue_count} issues")
     
     return result
+
+@mcp.resource("bigeye://issues/active")
+async def get_active_issues_resource() -> Dict[str, Any]:
+    """Get currently active data quality issues.
+    
+    Returns only issues with status NEW or ACKNOWLEDGED, excluding closed and merged issues.
+    Provides a focused view of current problems that need attention.
+    """
+    client = get_api_client()
+    workspace_id = config.get('workspace_id')
+    if not workspace_id:
+        return {"error": "No workspace ID configured"}
+    
+    debug_print(f"Fetching active issues for workspace {workspace_id}")
+    
+    # Fetch only NEW and ACKNOWLEDGED issues
+    result = await client.fetch_issues(
+        workspace_id=workspace_id,
+        currentStatus=["ISSUE_STATUS_NEW", "ISSUE_STATUS_ACKNOWLEDGED"],
+        page_size=50,  # Limit to most recent 50 active issues
+        include_full_history=False  # Keep response size manageable
+    )
+    
+    issues = result.get("issues", [])
+    
+    # Organize issues by severity and table
+    organized = {
+        "summary": {
+            "total_active": len(issues),
+            "by_status": {},
+            "by_priority": {},
+            "by_schema": {},
+            "most_affected_tables": []
+        },
+        "issues": [],
+        "last_updated": datetime.now().isoformat()
+    }
+    
+    # Count by status and priority
+    status_counts = {}
+    priority_counts = {}
+    schema_counts = {}
+    table_counts = {}
+    
+    for issue in issues:
+        # Status counting
+        status = issue.get("currentStatus", "UNKNOWN")
+        status_counts[status] = status_counts.get(status, 0) + 1
+        
+        # Priority counting
+        priority = issue.get("priority", "UNKNOWN")
+        priority_counts[priority] = priority_counts.get(priority, 0) + 1
+        
+        # Schema counting
+        schema = issue.get("schemaName", "UNKNOWN")
+        schema_counts[schema] = schema_counts.get(schema, 0) + 1
+        
+        # Table counting
+        table = issue.get("tableName", "UNKNOWN")
+        if table != "UNKNOWN":
+            table_counts[table] = table_counts.get(table, 0) + 1
+        
+        # Add simplified issue to list
+        organized["issues"].append({
+            "id": issue.get("id"),
+            "name": issue.get("name"),
+            "status": status,
+            "priority": priority,
+            "table": table,
+            "schema": schema,
+            "metric": issue.get("metric", {}).get("name") if issue.get("metric") else None,
+            "created_at": issue.get("createdAt"),
+            "last_event_time": issue.get("lastEventTime"),
+            "description": issue.get("description")
+        })
+    
+    # Update summary
+    organized["summary"]["by_status"] = status_counts
+    organized["summary"]["by_priority"] = priority_counts
+    organized["summary"]["by_schema"] = schema_counts
+    organized["summary"]["most_affected_tables"] = sorted(
+        table_counts.items(), 
+        key=lambda x: x[1], 
+        reverse=True
+    )[:5]  # Top 5 most affected tables
+    
+    debug_print(f"Found {len(issues)} active issues")
+    
+    return organized
+
+@mcp.resource("bigeye://issues/recent")
+async def get_recent_issues_resource() -> Dict[str, Any]:
+    """Get recently updated or resolved issues.
+    
+    Returns issues that have been updated in the last 7 days, including resolved ones,
+    to help track resolution patterns and recent activity.
+    """
+    client = get_api_client()
+    workspace_id = config.get('workspace_id')
+    if not workspace_id:
+        return {"error": "No workspace ID configured"}
+    
+    debug_print(f"Fetching recent issues for workspace {workspace_id}")
+    
+    # Fetch all issues (we'll filter by date client-side since the API doesn't have date filters)
+    result = await client.fetch_issues(
+        workspace_id=workspace_id,
+        page_size=100,  # Get more issues to ensure we have recent ones
+        include_full_history=False
+    )
+    
+    issues = result.get("issues", [])
+    
+    # Calculate 7 days ago timestamp
+    seven_days_ago = datetime.now() - timedelta(days=7)
+    seven_days_ago_ms = int(seven_days_ago.timestamp() * 1000)
+    
+    # Filter for recently updated issues
+    recent_issues = []
+    for issue in issues:
+        # Check if updated recently (using lastEventTime or updatedAt)
+        last_event = issue.get("lastEventTime", 0)
+        updated_at = issue.get("updatedAt", 0)
+        most_recent = max(last_event, updated_at)
+        
+        if most_recent >= seven_days_ago_ms:
+            recent_issues.append(issue)
+    
+    # Organize by resolution status
+    organized = {
+        "summary": {
+            "total_recent": len(recent_issues),
+            "resolved_count": 0,
+            "new_count": 0,
+            "acknowledged_count": 0,
+            "resolution_rate": 0.0,
+            "average_resolution_time_hours": None
+        },
+        "resolved": [],
+        "new_issues": [],
+        "still_active": [],
+        "timeline": [],
+        "last_updated": datetime.now().isoformat()
+    }
+    
+    resolution_times = []
+    
+    for issue in recent_issues:
+        status = issue.get("currentStatus", "")
+        simplified_issue = {
+            "id": issue.get("id"),
+            "name": issue.get("name"),
+            "status": status,
+            "priority": issue.get("priority"),
+            "table": issue.get("tableName"),
+            "schema": issue.get("schemaName"),
+            "created_at": issue.get("createdAt"),
+            "last_event_time": issue.get("lastEventTime"),
+            "metric": issue.get("metric", {}).get("name") if issue.get("metric") else None
+        }
+        
+        # Categorize by status
+        if status == "ISSUE_STATUS_CLOSED":
+            organized["resolved"].append(simplified_issue)
+            organized["summary"]["resolved_count"] += 1
+            
+            # Calculate resolution time if we have both created and resolved times
+            if issue.get("createdAt") and issue.get("lastEventTime"):
+                resolution_time_ms = issue["lastEventTime"] - issue["createdAt"]
+                resolution_times.append(resolution_time_ms / (1000 * 60 * 60))  # Convert to hours
+                
+        elif status == "ISSUE_STATUS_NEW":
+            # Check if it was created in the last 7 days
+            if issue.get("createdAt", 0) >= seven_days_ago_ms:
+                organized["new_issues"].append(simplified_issue)
+                organized["summary"]["new_count"] += 1
+            else:
+                organized["still_active"].append(simplified_issue)
+                
+        elif status in ["ISSUE_STATUS_ACKNOWLEDGED", "ISSUE_STATUS_MONITORING"]:
+            organized["still_active"].append(simplified_issue)
+            if status == "ISSUE_STATUS_ACKNOWLEDGED":
+                organized["summary"]["acknowledged_count"] += 1
+        
+        # Add to timeline
+        organized["timeline"].append({
+            "timestamp": issue.get("lastEventTime"),
+            "issue_id": issue.get("id"),
+            "issue_name": issue.get("name"),
+            "event": f"Issue {status}",
+            "table": issue.get("tableName")
+        })
+    
+    # Sort timeline by timestamp (most recent first)
+    organized["timeline"] = sorted(
+        organized["timeline"], 
+        key=lambda x: x["timestamp"] if x["timestamp"] else 0, 
+        reverse=True
+    )[:20]  # Keep only 20 most recent events
+    
+    # Calculate resolution rate
+    if organized["summary"]["total_recent"] > 0:
+        organized["summary"]["resolution_rate"] = round(
+            (organized["summary"]["resolved_count"] / organized["summary"]["total_recent"]) * 100, 
+            1
+        )
+    
+    # Calculate average resolution time
+    if resolution_times:
+        organized["summary"]["average_resolution_time_hours"] = round(
+            sum(resolution_times) / len(resolution_times), 
+            1
+        )
+    
+    debug_print(f"Found {len(recent_issues)} recent issues (last 7 days)")
+    
+    return organized
 
 # Tools
 @mcp.tool()
