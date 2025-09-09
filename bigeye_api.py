@@ -199,34 +199,45 @@ class BigeyeAPIClient:
         
         # If we want to reduce the response size, strip out the events/metric runs
         if not include_full_history and "issues" in result:
+            filtered_issues = []
             for issue in result.get("issues", []):
-                # Keep only essential fields for each issue
+                # Create a new dict with ONLY essential fields
+                filtered_issue = {}
                 essential_fields = [
                     "id", "name", "currentStatus", "priority", "description",
                     "tableName", "columnName", "schemaName", "warehouseName",
                     "createdAt", "updatedAt", "lastEventTime", "assignee",
                     "owner", "labels", "tags", "isIncident", "parentIssueId",
-                    "metric", "alertId", "metricId", "tableId", "columnId"
+                    "alertId", "metricId", "tableId", "columnId"
                 ]
                 
-                # Remove or truncate non-essential fields
-                if "events" in issue:
-                    # Keep only the first event (most recent) for basic info
-                    issue["events"] = issue["events"][:1] if issue["events"] else []
-                    
-                    # For that event, remove large nested data
-                    for event in issue["events"]:
-                        if "metricEvent" in event:
-                            # Just keep the event type and timestamp
-                            event["metricEvent"] = {
-                                "type": event["metricEvent"].get("type"),
-                                "timestamp": event["metricEvent"].get("timestamp")
-                            }
+                # Copy only essential fields that exist
+                for field in essential_fields:
+                    if field in issue:
+                        filtered_issue[field] = issue[field]
                 
-                # Remove other large fields that might exist
-                issue.pop("metricRunHistory", None)
-                issue.pop("detailedHistory", None)
-                issue.pop("allEvents", None)
+                # Add simplified metric info if present
+                if "metric" in issue and issue["metric"]:
+                    filtered_issue["metric"] = {
+                        "id": issue["metric"].get("id"),
+                        "name": issue["metric"].get("name"),
+                        "type": issue["metric"].get("type"),
+                        "metricType": issue["metric"].get("metricType")
+                    }
+                
+                # Add only the most recent event summary if events exist
+                if "events" in issue and issue["events"] and len(issue["events"]) > 0:
+                    most_recent_event = issue["events"][0]
+                    filtered_issue["lastEvent"] = {
+                        "type": most_recent_event.get("type"),
+                        "timestamp": most_recent_event.get("timestamp"),
+                        "message": most_recent_event.get("message")
+                    }
+                
+                filtered_issues.append(filtered_issue)
+            
+            # Replace the original issues with filtered ones
+            result["issues"] = filtered_issues
         
         return result
         
@@ -919,21 +930,47 @@ class BigeyeAPIClient:
             
         all_issues = issues_result.get("issues", [])
         
-        # Strip out excessive historical data from issues
+        # Strip out excessive historical data from issues - create new filtered issues
+        filtered_issues = []
+        essential_fields = [
+            "id", "name", "currentStatus", "priority", "description",
+            "tableName", "columnName", "schemaName", "warehouseName",
+            "createdAt", "updatedAt", "lastEventTime", "assignee",
+            "owner", "labels", "tags", "isIncident", "parentIssueId",
+            "alertId", "metricId", "tableId", "columnId"
+        ]
+        
         for issue in all_issues:
-            # Keep only essential fields and minimal events
-            if "events" in issue:
-                issue["events"] = issue["events"][:1] if issue["events"] else []
-                for event in issue["events"]:
-                    if "metricEvent" in event:
-                        event["metricEvent"] = {
-                            "type": event["metricEvent"].get("type"),
-                            "timestamp": event["metricEvent"].get("timestamp")
-                        }
-            # Remove other large fields
-            issue.pop("metricRunHistory", None)
-            issue.pop("detailedHistory", None)
-            issue.pop("allEvents", None)
+            # Create a new dict with ONLY essential fields
+            filtered_issue = {}
+            
+            # Copy only essential fields that exist
+            for field in essential_fields:
+                if field in issue:
+                    filtered_issue[field] = issue[field]
+            
+            # Add simplified metric info if present
+            if "metric" in issue and issue["metric"]:
+                filtered_issue["metric"] = {
+                    "id": issue["metric"].get("id"),
+                    "name": issue["metric"].get("name"),
+                    "type": issue["metric"].get("type"),
+                    "metricType": issue["metric"].get("metricType")
+                }
+            
+            # Add only the most recent event summary if events exist
+            if "events" in issue and issue["events"] and len(issue["events"]) > 0:
+                most_recent_event = issue["events"][0]
+                filtered_issue["lastEvent"] = {
+                    "type": most_recent_event.get("type"),
+                    "timestamp": most_recent_event.get("timestamp"),
+                    "message": most_recent_event.get("message")
+                }
+            
+            filtered_issues.append(filtered_issue)
+        
+        # Use filtered issues from here on
+        all_issues = filtered_issues
         
         # Filter to only issues for this specific table
         table_issues = []

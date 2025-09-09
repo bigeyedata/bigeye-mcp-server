@@ -26,14 +26,35 @@ mcp = FastMCP(
     instructions="""
     Bigeye Data Observability Platform Integration
     
-    This server provides tools for interacting with Bigeye's data quality monitoring:
+    This server provides both RESOURCES and TOOLS for data quality monitoring:
+    
+    RESOURCES (Read-only, Fast Access)
+    ===================================
+    Resources provide quick access to frequently needed data. Use these for:
+    - Checking current issue status: bigeye://issues/active
+    - Reviewing recent activity: bigeye://issues/recent
+    - Getting configuration info: bigeye://config
+    
+    Use the list_resources() tool to discover all available resources.
+    Resources are ideal for dashboards, status checks, and quick queries.
+    
+    TOOLS (Actions and Complex Queries)
+    ====================================
+    Tools perform actions and complex filtering:
     - Query and manage data quality issues
     - Analyze data lineage and dependencies
     - Track AI agent data access patterns
     - Perform root cause analysis
     
     The server is pre-configured with credentials from environment variables.
-    All tools are ready to use immediately.
+    
+    IMPORTANT: Choosing Resources vs Tools
+    =======================================
+    - Use RESOURCES for: Quick status checks, common queries, dashboard data
+    - Use TOOLS for: Specific filtering, actions, updates, complex analysis
+    
+    Example: "Show me active issues" → Use resource bigeye://issues/active
+    Example: "Show issues for schema X" → Use get_issues() tool with filters
     
     IMPORTANT: Table and Column Search Workflow
     ============================================
@@ -45,7 +66,8 @@ mcp = FastMCP(
        - Use search_schemas() when asked about a schema
     
     2. Present the search results to the user as a numbered list, showing:
-       - Full qualified name (e.g., database.schema.table)
+       - Full qualified name (e.g., ORACLE.PROD_SCHEMA.ORDERS)
+       - Database system it belongs to
        - Any relevant metadata (row count, column count, etc.)
     
     3. Ask the user to confirm which specific object they meant by number or name
@@ -53,10 +75,18 @@ mcp = FastMCP(
     4. Only after the user confirms the specific object should you proceed with 
        the rest of their request (checking health, analyzing issues, etc.)
     
+    5. ALWAYS refer to tables and columns by their FULL QUALIFIED NAME in all
+       communications with the user. Never say just "the ORDERS table" - say
+       "the ORACLE.PROD_SCHEMA.ORDERS table" to be clear about which database
+       system it belongs to.
+    
     Example interaction:
     User: "Check the health of the orders table"
-    Assistant: First searches for tables with 'orders' in the name, presents matches,
-              asks user to confirm which one, then proceeds with health check.
+    Assistant: "I found 3 tables with 'orders' in the name:
+                1. ORACLE.PROD_SCHEMA.ORDERS (in Oracle database)
+                2. SNOWFLAKE.ANALYTICS.ORDERS (in Snowflake database)  
+                3. POSTGRES.PUBLIC.ORDERS (in Postgres database)
+                Which one would you like me to check?"
     
     This ensures accuracy and prevents operations on the wrong database objects.
     """
@@ -222,6 +252,12 @@ async def get_active_issues_resource() -> Dict[str, Any]:
         if table != "UNKNOWN":
             table_counts[table] = table_counts.get(table, 0) + 1
         
+        # Build full qualified name for the table
+        warehouse = issue.get("warehouseName", "")
+        database = issue.get("databaseName", "")
+        full_table_parts = [p for p in [warehouse, database, schema, table] if p]
+        full_table_name = ".".join(full_table_parts) if full_table_parts else table
+        
         # Add simplified issue to list
         organized["issues"].append({
             "id": issue.get("id"),
@@ -230,6 +266,10 @@ async def get_active_issues_resource() -> Dict[str, Any]:
             "priority": priority,
             "table": table,
             "schema": schema,
+            "warehouse": warehouse,
+            "database": database,
+            "full_table_name": full_table_name,
+            "display_table": f"{full_table_name} ({warehouse or database} database)" if (warehouse or database) else table,
             "metric": issue.get("metric", {}).get("name") if issue.get("metric") else None,
             "created_at": issue.get("createdAt"),
             "last_event_time": issue.get("lastEventTime"),
@@ -309,7 +349,27 @@ async def get_recent_issues_resource() -> Dict[str, Any]:
     
     for issue in recent_issues:
         status = issue.get("currentStatus", "")
+        
+        # Build full qualified name for the table
+        warehouse = issue.get("warehouseName", "")
+        schema = issue.get("schemaName", "")
+        table = issue.get("tableName", "")
+        column = issue.get("columnName", "")
+        
+        full_table_name = ""
+        if warehouse and schema and table:
+            full_table_name = f"{warehouse}.{schema}.{table}"
+        elif schema and table:
+            full_table_name = f"{schema}.{table}"
+        elif table:
+            full_table_name = table
+            
+        display_table = f"{full_table_name} ({warehouse} database)" if warehouse and full_table_name else full_table_name
+        
         simplified_issue = {
+            "full_table_name": full_table_name,
+            "display_table": display_table,
+            "USE_THIS_TABLE_NAME": full_table_name,
             "id": issue.get("id"),
             "name": issue.get("name"),
             "status": status,
@@ -380,6 +440,65 @@ async def get_recent_issues_resource() -> Dict[str, Any]:
 
 # Tools
 @mcp.tool()
+async def list_resources() -> Dict[str, Any]:
+    """List all available MCP resources for quick data access.
+    
+    Resources provide read-only, cacheable access to frequently needed data.
+    Use resources instead of tools when you need quick reference information
+    that doesn't require complex filtering or actions.
+    
+    Returns:
+        Dictionary containing available resources with their URIs and descriptions
+    """
+    return {
+        "description": "Available MCP resources for quick data access",
+        "resources": [
+            {
+                "uri": "bigeye://auth/status",
+                "description": "Check authentication status",
+                "update_frequency": "On demand"
+            },
+            {
+                "uri": "bigeye://health",
+                "description": "API health check status",
+                "update_frequency": "On demand"
+            },
+            {
+                "uri": "bigeye://config",
+                "description": "Current configuration (workspace, API URL)",
+                "update_frequency": "Static"
+            },
+            {
+                "uri": "bigeye://issues",
+                "description": "All issues in the workspace (can be large)",
+                "update_frequency": "5 minutes",
+                "note": "Consider using /active or /recent for filtered views"
+            },
+            {
+                "uri": "bigeye://issues/active",
+                "description": "Currently active issues (NEW and ACKNOWLEDGED only)",
+                "update_frequency": "5 minutes",
+                "features": [
+                    "Summary statistics by status, priority, schema",
+                    "Top 5 most affected tables",
+                    "Simplified issue format"
+                ]
+            },
+            {
+                "uri": "bigeye://issues/recent",
+                "description": "Issues updated in the last 7 days",
+                "update_frequency": "15 minutes",
+                "features": [
+                    "Resolution rate and average resolution time",
+                    "Timeline of recent events",
+                    "Categorized by resolved/new/active"
+                ]
+            }
+        ],
+        "usage_tip": "Access resources using their URI, e.g., 'Show me bigeye://issues/active'"
+    }
+
+@mcp.tool()
 async def check_health() -> Dict[str, Any]:
     """Check the health of the Bigeye API."""
     
@@ -398,9 +517,12 @@ async def get_issues(
 ) -> Dict[str, Any]:
     """Get issues from the Bigeye API with optimized response size.
     
-    This tool fetches issues with only essential metadata (id, name, status, owner, etc.)
-    and minimal event history to keep responses manageable. Full historical metric runs
-    are excluded to prevent overwhelming context.
+    NOTE: For quick access to common issue queries, consider using these resources instead:
+    - bigeye://issues/active - Returns only NEW and ACKNOWLEDGED issues with summaries
+    - bigeye://issues/recent - Returns issues from last 7 days with resolution metrics
+    
+    This tool is best for custom filtering by specific statuses or schemas.
+    It fetches issues with only essential metadata and minimal event history.
     
     Args:
         statuses: Optional list of issue statuses to filter by. Possible values:
@@ -462,12 +584,19 @@ async def get_table_issues(
     the exact table the user is referring to. Only use this tool AFTER the user has
     confirmed which specific table they mean.
     
+    IMPORTANT: When reporting issues to the user, always use the FULL QUALIFIED NAME
+    of the table (e.g., "ORACLE.PROD_SCHEMA.ORDERS" not just "ORDERS table").
+    
+    NOTE: For general issue monitoring, consider using these resources instead:
+    - bigeye://issues/active - For current active issues across all tables
+    - bigeye://issues/recent - For recent issue activity and resolution patterns
+    
     This tool fetches all issues related to a specific table in Bigeye,
     making it easier to check data quality for individual tables.
     
     Args:
         table_name: Name of the table (e.g., "ORDERS")
-        warehouse_name: Optional warehouse name (e.g., "SNOWFLAKE")
+        warehouse_name: Optional warehouse name (e.g., "ORACLE", "SNOWFLAKE")
         schema_name: Optional schema name (e.g., "PROD_REPL")
         statuses: Optional list of issue statuses to filter by:
             - ISSUE_STATUS_NEW
@@ -619,11 +748,26 @@ async def analyze_table_data_quality(
                 "hint": "Make sure the table name is correct and has been imported into Bigeye"
             }
             
-        # Get the table details
+        # Get the table details with full qualified name
+        warehouse = matching_table.get("warehouseName", "")
+        schema = matching_table.get("schemaName", "")
+        table = matching_table.get("tableName", "")
+        
+        full_qualified_name = ""
+        if warehouse and schema and table:
+            full_qualified_name = f"{warehouse}.{schema}.{table}"
+        elif schema and table:
+            full_qualified_name = f"{schema}.{table}"
+        elif table:
+            full_qualified_name = table
+            
         table_info = {
-            "table_name": matching_table.get("tableName"),
-            "schema_name": matching_table.get("schemaName"),
-            "warehouse_name": matching_table.get("warehouseName"),
+            "full_qualified_name": full_qualified_name,
+            "USE_THIS_NAME": full_qualified_name,
+            "display_name": f"{full_qualified_name} (in {warehouse} database)" if warehouse else full_qualified_name,
+            "table_name": table,
+            "schema_name": schema,
+            "warehouse_name": warehouse,
             "table_id": matching_table.get("id")
         }
         
@@ -1808,8 +1952,14 @@ async def lineage_find_node(
             else:
                 display_path = node.get("nodeName", "Unknown")
             
+            # Build full qualified name from path parts
+            full_qualified_name = display_path.replace(" / ", ".")
+            
             formatted_node = {
                 "id": node.get("id"),
+                "full_qualified_name": full_qualified_name,
+                "USE_THIS_NAME": full_qualified_name,
+                "display_name": f"{full_qualified_name} ({node.get('nodeType', 'Unknown type')})",
                 "name": node.get("nodeName"),
                 "type": node.get("nodeType"),
                 "path": display_path,
@@ -1891,15 +2041,29 @@ async def lineage_explore_catalog(
             search_upper = search_term.upper()
             tables = [t for t in tables if search_upper in t.get("tableName", "").upper()]
         
-        # Format the results
+        # Format the results with emphasized full qualified names
         formatted_tables = []
         for table in tables:
+            warehouse = table.get('warehouseName', '')
+            schema = table.get('schemaName', '')
+            table_name = table.get('tableName', '')
+            
+            full_qualified_name = ""
+            if warehouse and schema and table_name:
+                full_qualified_name = f"{warehouse}.{schema}.{table_name}"
+            elif schema and table_name:
+                full_qualified_name = f"{schema}.{table_name}"
+            elif table_name:
+                full_qualified_name = table_name
+                
             formatted_tables.append({
+                "full_qualified_name": full_qualified_name,
+                "USE_THIS_NAME": full_qualified_name,
+                "display_name": f"{full_qualified_name} (in {warehouse} database)" if warehouse else full_qualified_name,
                 "id": table.get("id"),
-                "name": table.get("tableName"),
-                "schema": table.get("schemaName"),
-                "warehouse": table.get("warehouseName"),
-                "full_name": f"{table.get('warehouseName', '')}.{table.get('schemaName', '')}.{table.get('tableName', '')}",
+                "name": table_name,
+                "schema": schema,
+                "warehouse": warehouse,
                 "catalog_path": table.get("catalogPath")
             })
             
@@ -2088,6 +2252,10 @@ async def search_tables(
     the user is referring to. Present the results to the user and ask them to
     confirm which table they meant before using any other table-related tools.
     
+    IMPORTANT: Always refer to tables by their FULL QUALIFIED NAME when discussing
+    them with the user (e.g., "ORACLE.PROD_SCHEMA.ORDERS" not just "ORDERS").
+    This avoids confusion about which database system the table belongs to.
+    
     Args:
         table_name: Optional table name to search for (supports partial matching)
         schema_names: Optional list of schema names to filter by
@@ -2134,15 +2302,27 @@ async def search_tables(
         
         formatted_tables = []
         for table in tables:
+            # Build the full qualified name
+            warehouse = table.get("warehouseName", "")
+            database = table.get("databaseName", "")
+            schema = table.get("schemaName", "")
+            name = table.get("name", "")
+            
+            # Create full qualified name (warehouse.database.schema.table or database.schema.table)
+            full_parts = [p for p in [warehouse, database, schema, name] if p]
+            full_qualified_name = ".".join(full_parts)
+            
             formatted_table = {
                 "id": table.get("id"),
-                "name": table.get("name"),
-                "schema": table.get("schemaName"),
-                "database": table.get("databaseName"),
-                "warehouse": table.get("warehouseName"),
-                "full_name": f"{table.get('databaseName', '')}.{table.get('schemaName', '')}.{table.get('name', '')}",
+                "name": name,
+                "schema": schema,
+                "database": database,
+                "warehouse": warehouse,
+                "full_qualified_name": full_qualified_name,
+                "display_name": f"{full_qualified_name} (in {warehouse or database} database)",
                 "row_count": table.get("rowCount"),
-                "last_updated": table.get("lastUpdatedAt")
+                "last_updated": table.get("lastUpdatedAt"),
+                "USE_THIS_NAME": full_qualified_name  # Emphasized field for Claude
             }
             
             if include_columns and table.get("columns"):
@@ -2182,6 +2362,10 @@ async def search_columns(
     This tool searches for database columns and helps identify the exact column
     the user is referring to. Present the results to the user and ask them to
     confirm which column they meant before using any other column-related tools.
+    
+    IMPORTANT: Always refer to columns by their FULL QUALIFIED NAME when discussing
+    them with the user (e.g., "ORACLE.PROD_SCHEMA.ORDERS.CUSTOMER_ID" not just "CUSTOMER_ID").
+    This clearly shows which database system and table the column belongs to.
     
     Args:
         column_name: Optional column name to search for (supports partial matching)
@@ -2229,15 +2413,29 @@ async def search_columns(
         
         formatted_columns = []
         for column in columns:
+            # Build the full qualified name
+            warehouse = column.get("warehouseName", "")
+            database = column.get("databaseName", "")
+            schema = column.get("schemaName", "")
+            table = column.get("tableName", "")
+            name = column.get("name", "")
+            
+            # Create full qualified name for the column
+            full_parts = [p for p in [warehouse, database, schema, table, name] if p]
+            full_qualified_name = ".".join(full_parts)
+            
             formatted_columns.append({
                 "id": column.get("id"),
-                "name": column.get("name"),
-                "table": column.get("tableName"),
-                "schema": column.get("schemaName"),
-                "database": column.get("databaseName"),
+                "name": name,
+                "table": table,
+                "schema": schema,
+                "database": database,
+                "warehouse": warehouse,
                 "type": column.get("type"),
                 "nullable": column.get("isNullable", True),
-                "full_name": f"{column.get('tableName', '')}.{column.get('name', '')}"
+                "full_qualified_name": full_qualified_name,
+                "display_name": f"{full_qualified_name} (in {warehouse or database} database)",
+                "USE_THIS_NAME": full_qualified_name  # Emphasized field for Claude
             })
         
         return {
