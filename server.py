@@ -1225,23 +1225,29 @@ async def lineage_analyze_upstream_causes(
 async def lineage_analyze_downstream_impact(
     node_id: int,
     max_depth: Optional[int] = 5,
-    include_integration_entities: bool = True
+    include_integration_entities: bool = True,
+    impact_focus: Optional[str] = "all"
 ) -> Dict[str, Any]:
     """Analyze downstream impact of data quality issues.
     
     This tool performs downstream impact analysis to understand how data quality issues
-    in a given node affect downstream consumers.
+    in a given node affect downstream consumers. Can focus on specific types of impact.
     
     Args:
         node_id: The ID of the lineage node with potential data quality issues
         max_depth: Maximum depth to search downstream (default: 5)
         include_integration_entities: Include BI tools, dashboards, etc. (default: True)
+        impact_focus: Type of impact to focus on (default: "all"):
+            - "all": Show all downstream impacts
+            - "analytics": Only BI/reporting tools (Tableau, PowerBI, Looker, etc.)
+            - "data_products": Final tables/views that are likely data products
+            - "critical": Only nodes with existing issues or high metric counts
         
     Returns:
-        Dictionary containing impact analysis
+        Dictionary containing impact analysis with categorized impacts
     """
     
-    debug_print(f"Analyzing downstream impact for node {node_id}")
+    debug_print(f"Analyzing downstream impact for node {node_id} with focus: {impact_focus}")
     
     try:
         # Get downstream lineage graph
@@ -1261,32 +1267,77 @@ async def lineage_analyze_downstream_impact(
         impacted_nodes = []
         critical_impacts = []
         integration_entities = []
+        analytics_tools = []
+        data_products = []
+        
+        # Known analytics/BI tool types and sources
+        analytics_node_types = ["BI_WORKBOOK", "BI_REPORT", "BI_DASHBOARD", "APPLICATION"]
+        analytics_sources = ["TABLEAU", "POWERBI", "LOOKER", "QLIK", "SISENSE", "METABASE", "SUPERSET"]
         
         # Analyze downstream nodes for impact
         for node_data in nodes.values():
             lineage_node = node_data.get("lineageNode", {})
             node_type = lineage_node.get("nodeType", "")
+            node_name = lineage_node.get("nodeName", "")
             metric_count = node_data.get("metricCount", 0)
             issue_count = node_data.get("issueCount", 0)
+            source_name = lineage_node.get("source", {}).get("name", "").upper()
+            catalog_path = lineage_node.get("catalogPath", {})
+            path_parts = catalog_path.get("pathParts", [])
+            
+            # Build full qualified name
+            full_qualified_name = ".".join(path_parts) if path_parts else node_name
             
             node_info = {
                 "node_id": lineage_node.get("id"),
-                "node_name": lineage_node.get("nodeName"),
+                "node_name": node_name,
+                "full_qualified_name": full_qualified_name,
+                "USE_THIS_NAME": full_qualified_name,
                 "node_type": node_type,
                 "metric_count": metric_count,
                 "existing_issues": issue_count,
-                "catalog_path": lineage_node.get("catalogPath", {}),
-                "source": lineage_node.get("source", {})
+                "catalog_path": catalog_path,
+                "source": lineage_node.get("source", {}),
+                "source_name": source_name
             }
             
+            # Categorize the node
+            is_analytics = (node_type in analytics_node_types or 
+                          any(tool in source_name for tool in analytics_sources))
+            
+            # Check if it's a likely data product (endpoint with no downstream)
+            edges = downstream_result.get("edges", [])
+            has_downstream = any(e.get("fromId") == lineage_node.get("id") for e in edges)
+            is_likely_data_product = (not has_downstream and 
+                                     node_type == "DATA_NODE_TYPE_TABLE" and
+                                     ("PROD" in node_name.upper() or "DIM_" in node_name.upper() or 
+                                      "FACT_" in node_name.upper() or "AGG_" in node_name.upper()))
+            
             # Categorize impacted nodes
-            if node_type in ["BI_WORKBOOK", "BI_REPORT", "APPLICATION"]:
+            if is_analytics:
+                analytics_tools.append(node_info)
                 if include_integration_entities:
                     integration_entities.append(node_info)
-            elif metric_count > 0 or issue_count > 0:
+            
+            if is_likely_data_product:
+                data_products.append(node_info)
+            
+            if metric_count > 0 or issue_count > 0:
                 critical_impacts.append(node_info)
             
-            impacted_nodes.append(node_info)
+            # Apply focus filter
+            include_node = False
+            if impact_focus == "all":
+                include_node = True
+            elif impact_focus == "analytics" and is_analytics:
+                include_node = True
+            elif impact_focus == "data_products" and is_likely_data_product:
+                include_node = True
+            elif impact_focus == "critical" and (metric_count > 0 or issue_count > 0):
+                include_node = True
+            
+            if include_node:
+                impacted_nodes.append(node_info)
         
         debug_print(f"Found {len(impacted_nodes)} impacted nodes")
         
@@ -1298,9 +1349,13 @@ async def lineage_analyze_downstream_impact(
             severity_score += 2
             severity_factors.append("High number of impacted downstream nodes")
         
-        if len(integration_entities) > 0:
+        if len(analytics_tools) > 0:
             severity_score += 2
-            severity_factors.append("Business intelligence tools and reports affected")
+            severity_factors.append(f"Business intelligence tools and reports affected ({len(analytics_tools)} items)")
+        
+        if len(data_products) > 0:
+            severity_score += 1
+            severity_factors.append(f"Production data products impacted ({len(data_products)} tables)")
         
         if len(critical_impacts) > 3:
             severity_score += 1
@@ -1311,33 +1366,73 @@ async def lineage_analyze_downstream_impact(
         
         # Generate stakeholder notifications
         notifications = []
-        if integration_entities:
-            bi_tools = set(entity.get("source", {}).get("name", "Unknown") for entity in integration_entities)
+        if analytics_tools:
+            bi_tools = set(entity.get("source_name", entity.get("source", {}).get("name", "Unknown")) 
+                          for entity in analytics_tools)
             notifications.append(f"Notify BI teams - affected tools: {', '.join(bi_tools)}")
+            
+            # Add specific analytics tool counts
+            tool_counts = {}
+            for tool in analytics_tools:
+                tool_type = tool.get("source_name", "Unknown")
+                tool_counts[tool_type] = tool_counts.get(tool_type, 0) + 1
+            
+            for tool_type, count in tool_counts.items():
+                if tool_type != "Unknown":
+                    notifications.append(f"  - {count} {tool_type} dashboard(s)/report(s) affected")
         
         if critical_impacts:
             notifications.append("Alert data engineering teams about downstream data quality impacts")
         
+        if data_products:
+            notifications.append(f"Production data products affected: {len(data_products)} tables/views")
+        
+        # Create analytics-specific summary if focus is on analytics
+        analytics_summary = None
+        if impact_focus == "analytics" and analytics_tools:
+            analytics_summary = {
+                "total_analytics_nodes": len(analytics_tools),
+                "by_tool": {},
+                "affected_dashboards": []
+            }
+            for tool in analytics_tools:
+                tool_type = tool.get("source_name", "Unknown")
+                if tool_type not in analytics_summary["by_tool"]:
+                    analytics_summary["by_tool"][tool_type] = []
+                analytics_summary["by_tool"][tool_type].append({
+                    "name": tool.get("full_qualified_name"),
+                    "id": tool.get("node_id")
+                })
+                analytics_summary["affected_dashboards"].append(tool.get("full_qualified_name"))
+        
         return {
             "impact_summary": {
                 "source_node_id": node_id,
+                "impact_focus": impact_focus,
                 "max_depth_analyzed": max_depth,
                 "total_impacted_nodes": len(impacted_nodes),
                 "critical_impacts_count": len(critical_impacts),
+                "analytics_tools_count": len(analytics_tools),
+                "data_products_count": len(data_products),
                 "integration_entities_count": len(integration_entities),
                 "severity_level": severity_level,
                 "severity_score": severity_score
             },
             "impacted_nodes": impacted_nodes,
-            "critical_impacts": critical_impacts,
-            "integration_entities": integration_entities if include_integration_entities else [],
+            "categorized_impacts": {
+                "critical": critical_impacts,
+                "analytics_tools": analytics_tools,
+                "data_products": data_products,
+                "integration_entities": integration_entities if include_integration_entities else []
+            },
+            "analytics_summary": analytics_summary,
             "impact_severity": {
                 "level": severity_level,
                 "score": severity_score,
                 "factors": severity_factors
             },
             "stakeholder_notifications": notifications,
-            "downstream_lineage_graph": downstream_result
+            "downstream_lineage_graph": downstream_result if impact_focus == "all" else None
         }
         
     except Exception as e:
