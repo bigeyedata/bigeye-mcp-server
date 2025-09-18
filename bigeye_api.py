@@ -52,7 +52,7 @@ class BigeyeAPIClient:
         
         # Add workspace_id as a header if configured
         if self.workspace_id:
-            headers["X-Workspace-Id"] = str(self.workspace_id)
+            headers["x-bigeye-workspace-id"] = str(self.workspace_id)
         
         # Verbose logging for ALL requests
         print(f"\n[BIGEYE API VERBOSE] === REQUEST DETAILS ===", file=sys.stderr)
