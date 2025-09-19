@@ -283,6 +283,23 @@ class BigeyeAPIClient:
             method="POST",
             json_data=payload
         )
+
+    async def get_upstream_issues_for_report(
+        self,
+        report_id: int
+    ) -> Dict[str, Any]:
+        """Get upstream issues for a BI report (like a Tableau workbook)
+
+        Args:
+            report_id: The ID of the BI report to get upstream issues for
+
+        Returns:
+            Dictionary containing the upstream issues of the desired report
+        """
+        return await self.make_request(
+            f"/api/v2/lineage/nodes/{report_id}/upstream-issues",
+            method="GET"
+        )
         
     async def get_issue_resolution_steps(
         self,
@@ -584,6 +601,8 @@ class BigeyeAPIClient:
         node_type: Optional[str] = None
     ) -> Dict[str, Any]:
         """Find a lineage node by name.
+           Note: do not include asterisks to search.
+           The server includes wildcards automatically.
         
         Args:
             node_name: Name of the node to find

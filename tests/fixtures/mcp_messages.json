@@ -39,6 +39,7 @@
       "analyze_upstream_root_causes",
       "analyze_downstream_impact",
       "get_lineage_node_issues",
+      "get_upstream_issues_for_report",
       "trace_issue_lineage_path"
     ]
   },

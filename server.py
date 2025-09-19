@@ -1928,13 +1928,11 @@ async def lineage_find_node(
     
     Search format supports:
     - Path-based search: "warehouse/schema/table/column"
-    - Wildcards: "*" matches any characters
     - Partial names: Search for any part of the hierarchy
-    - Use "*" or empty string to search all nodes
     
     Args:
         workspace_id: Optional Bigeye workspace ID. If not provided, uses the configured workspace.
-        search_string: Search string using path format or partial names (default: "*" for all)
+        search_string: Search string using path format or partial names\
         node_type: Optional node type filter:
             - "DATA_NODE_TYPE_TABLE" - Tables only
             - "DATA_NODE_TYPE_COLUMN" - Columns only
@@ -1947,9 +1945,6 @@ async def lineage_find_node(
     Examples:
         # Find a specific table (uses configured workspace)
         await lineage_find_node(search_string="SNOWFLAKE/PROD_REPL/DIM_CUSTOMER")
-        
-        # Find all tables in a schema
-        await lineage_find_node(search_string="SNOWFLAKE/PROD_REPL/*")
         
         # Find all tables with "CUSTOMER" in the name
         await lineage_find_node(search_string="*CUSTOMER*")
@@ -1964,7 +1959,7 @@ async def lineage_find_node(
         await lineage_find_node(search_string="*", node_type="DATA_NODE_TYPE_CUSTOM")
         
         # Find custom nodes with "Claude" in the name
-        await lineage_find_node(search_string="*Claude*", node_type="DATA_NODE_TYPE_CUSTOM")
+        await lineage_find_node(search_string="Claude", node_type="DATA_NODE_TYPE_CUSTOM")
     """
     # Use configured workspace_id if not provided
     if workspace_id is None:
@@ -2442,6 +2437,86 @@ async def search_tables(
         return {
             "error": True,
             "message": f"Error searching tables: {str(e)}"
+        }
+
+@mcp.tool()
+async def get_upstream_issues_for_report(
+    report_id: int
+) -> Dict[str, Any]:
+    """Get upstream data quality issues for a BI report (like a Tableau workbook).
+
+    This tool retrieves all data quality issues in tables that feed into a specific
+    BI report or dashboard, helping identify why reports might have data quality problems.
+
+    Args:
+        report_id: The ID of the BI report/dashboard node in the lineage graph
+
+    Returns:
+        Dictionary containing upstream issues affecting the report
+
+    Example:
+        # Get upstream issues for a Tableau workbook
+        issues = await get_upstream_issues_for_report(report_id=12345)
+        print(f"Found {len(issues.get('issues', []))} upstream issues")
+    """
+
+    client = get_api_client()
+    debug_print(f"Getting upstream issues for report {report_id}")
+
+    try:
+        result = await client.get_upstream_issues_for_report(report_id=report_id)
+
+        if result.get("error"):
+            return result
+
+        # Add summary information
+        issues = result.get("issues", [])
+        total_issues = len(issues)
+
+        if total_issues > 0:
+            # Group issues by status and severity
+            status_counts = {}
+            severity_counts = {}
+            affected_tables = set()
+
+            for issue in issues:
+                status = issue.get("currentStatus", "UNKNOWN")
+                status_counts[status] = status_counts.get(status, 0) + 1
+
+                priority = issue.get("priority", "UNKNOWN")
+                severity_counts[priority] = severity_counts.get(priority, 0) + 1
+
+                # Track affected tables
+                table_name = issue.get("tableName")
+                schema_name = issue.get("schemaName")
+                warehouse_name = issue.get("warehouseName")
+
+                if table_name:
+                    full_table = f"{warehouse_name}.{schema_name}.{table_name}" if warehouse_name and schema_name else table_name
+                    affected_tables.add(full_table)
+
+            result["summary"] = {
+                "total_issues": total_issues,
+                "by_status": status_counts,
+                "by_priority": severity_counts,
+                "affected_tables_count": len(affected_tables),
+                "affected_tables": list(affected_tables)[:10]  # Show first 10 tables
+            }
+
+            debug_print(f"Found {total_issues} upstream issues for report {report_id}")
+        else:
+            debug_print(f"No upstream issues found for report {report_id}")
+            result["summary"] = {
+                "total_issues": 0,
+                "message": "No data quality issues found in upstream data sources"
+            }
+
+        return result
+
+    except Exception as e:
+        return {
+            "error": True,
+            "message": f"Error getting upstream issues for report: {str(e)}"
         }
 
 @mcp.tool()
