@@ -2520,6 +2520,174 @@ async def get_upstream_issues_for_report(
         }
 
 @mcp.tool()
+async def get_profile_for_table(
+    table_id: int
+) -> Dict[str, Any]:
+    """Get profile report for a table.
+
+    This tool retrieves the data profiling report for a specific table in Bigeye,
+    providing insights into data quality characteristics such as:
+    - Column-level statistics (nulls, uniqueness, data types)
+    - Data distribution patterns
+    - Data quality scores
+    - Freshness information
+    - Profile execution history
+
+    Args:
+        table_id: The ID of the table to get the profile for
+
+    Returns:
+        Dictionary containing the table's profile report
+
+    Example:
+        # Get profile for table with ID 12345
+        profile = await get_profile_for_table(table_id=12345)
+        print(f"Table has {profile.get('column_count', 0)} columns")
+    """
+
+    client = get_api_client()
+    debug_print(f"Getting profile for table {table_id}")
+
+    try:
+        result = await client.get_profile_for_table(table_id=table_id)
+
+        if result.get("error"):
+            return result
+
+        # Add summary information if profile data is available
+        if result and not result.get("error"):
+            summary = {
+                "table_id": table_id,
+                "profile_available": True
+            }
+
+            # Extract key profile metrics if available
+            if "columns" in result:
+                summary["column_count"] = len(result["columns"])
+
+            if "rowCount" in result:
+                summary["row_count"] = result["rowCount"]
+
+            if "lastProfiledAt" in result:
+                summary["last_profiled"] = result["lastProfiledAt"]
+
+            result["summary"] = summary
+            debug_print(f"Profile retrieved for table {table_id}")
+        else:
+            debug_print(f"No profile data found for table {table_id}")
+            result["summary"] = {
+                "table_id": table_id,
+                "profile_available": False,
+                "message": "No profile data available for this table"
+            }
+
+        return result
+
+    except Exception as e:
+        return {
+            "error": True,
+            "message": f"Error getting profile for table: {str(e)}"
+        }
+
+@mcp.tool()
+async def queue_table_profile(
+    table_id: int
+) -> Dict[str, Any]:
+    """Queue a profiling job for a table.
+
+    This tool initiates a data profiling workflow for a specific table in Bigeye.
+    The profiling process analyzes the table's data to generate quality metrics,
+    column statistics, and other profile information.
+
+    Args:
+        table_id: The ID of the table to queue profiling for
+
+    Returns:
+        Dictionary containing the workflow ID of the queued profiling job
+
+    Example:
+        # Queue profiling for table with ID 12345
+        result = await queue_table_profile(table_id=12345)
+        workflow_id = result.get("workflowId")
+    """
+    client = get_api_client()
+    debug_print(f"Queuing profile job for table {table_id}")
+
+    try:
+        result = await client.queue_table_profile(table_id=table_id)
+        if result.get("error"):
+            return result
+
+        # Add summary information
+        if result and not result.get("error"):
+            summary = {
+                "table_id": table_id,
+                "profiling_queued": True,
+                "workflow_id": result.get("workflowId")
+            }
+            result["summary"] = summary
+            debug_print(f"Profile job queued for table {table_id}, workflow ID: {result.get('workflowId')}")
+
+        return result
+    except Exception as e:
+        return {
+            "error": True,
+            "message": f"Error queuing profile for table: {str(e)}"
+        }
+
+@mcp.tool()
+async def get_profile_workflow_status_for_table(
+    table_id: int
+) -> Dict[str, Any]:
+    """Get the status of profiling workflow for a table.
+
+    This tool checks the current status of data profiling workflows for a specific table.
+    Use this to monitor the progress of profiling jobs that were previously queued.
+
+    Args:
+        table_id: The ID of the table to check profiling workflow status for
+
+    Returns:
+        Dictionary containing the workflow status information including:
+        - Workflow ID and current status
+        - Progress information if available
+        - Completion time if finished
+
+    Example:
+        # Check profiling status for table with ID 12345
+        status = await get_profile_workflow_status_for_table(table_id=12345)
+        print(f"Workflow status: {status.get('status')}")
+    """
+    client = get_api_client()
+    debug_print(f"Getting profile workflow status for table {table_id}")
+
+    try:
+        result = await client.get_profile_workflow_status_for_table(table_id=table_id)
+        if result.get("error"):
+            return result
+
+        # Add summary information
+        if result and not result.get("error"):
+            summary = {
+                "table_id": table_id,
+                "status_retrieved": True
+            }
+            # Extract key status information if available
+            if "status" in result:
+                summary["workflow_status"] = result["status"]
+            if "workflowId" in result:
+                summary["workflow_id"] = result["workflowId"]
+            result["summary"] = summary
+            debug_print(f"Profile workflow status retrieved for table {table_id}")
+
+        return result
+    except Exception as e:
+        return {
+            "error": True,
+            "message": f"Error getting profile workflow status for table: {str(e)}"
+        }
+
+@mcp.tool()
 async def search_columns(
     column_name: Optional[str] = None,
     table_names: Optional[List[str]] = None,
