@@ -2529,8 +2529,6 @@ async def get_profile_for_table(
     providing insights into data quality characteristics such as:
     - Column-level statistics (nulls, uniqueness, data types)
     - Data distribution patterns
-    - Data quality scores
-    - Freshness information
     - Profile execution history
 
     Args:
@@ -2549,39 +2547,7 @@ async def get_profile_for_table(
     debug_print(f"Getting profile for table {table_id}")
 
     try:
-        result = await client.get_profile_for_table(table_id=table_id)
-
-        if result.get("error"):
-            return result
-
-        # Add summary information if profile data is available
-        if result and not result.get("error"):
-            summary = {
-                "table_id": table_id,
-                "profile_available": True
-            }
-
-            # Extract key profile metrics if available
-            if "columns" in result:
-                summary["column_count"] = len(result["columns"])
-
-            if "rowCount" in result:
-                summary["row_count"] = result["rowCount"]
-
-            if "lastProfiledAt" in result:
-                summary["last_profiled"] = result["lastProfiledAt"]
-
-            result["summary"] = summary
-            debug_print(f"Profile retrieved for table {table_id}")
-        else:
-            debug_print(f"No profile data found for table {table_id}")
-            result["summary"] = {
-                "table_id": table_id,
-                "profile_available": False,
-                "message": "No profile data available for this table"
-            }
-
-        return result
+        return await client.get_profile_for_table(table_id=table_id)
 
     except Exception as e:
         return {
@@ -2596,8 +2562,8 @@ async def queue_table_profile(
     """Queue a profiling job for a table.
 
     This tool initiates a data profiling workflow for a specific table in Bigeye.
-    The profiling process analyzes the table's data to generate quality metrics,
-    column statistics, and other profile information.
+    The profiling process analyzes the table's data to generate column statistics,
+    suggested data quality metrics, and other profile information.
 
     Args:
         table_id: The ID of the table to queue profiling for
@@ -2614,21 +2580,7 @@ async def queue_table_profile(
     debug_print(f"Queuing profile job for table {table_id}")
 
     try:
-        result = await client.queue_table_profile(table_id=table_id)
-        if result.get("error"):
-            return result
-
-        # Add summary information
-        if result and not result.get("error"):
-            summary = {
-                "table_id": table_id,
-                "profiling_queued": True,
-                "workflow_id": result.get("workflowId")
-            }
-            result["summary"] = summary
-            debug_print(f"Profile job queued for table {table_id}, workflow ID: {result.get('workflowId')}")
-
-        return result
+        return await client.queue_table_profile(table_id=table_id)
     except Exception as e:
         return {
             "error": True,
@@ -2662,25 +2614,7 @@ async def get_profile_workflow_status_for_table(
     debug_print(f"Getting profile workflow status for table {table_id}")
 
     try:
-        result = await client.get_profile_workflow_status_for_table(table_id=table_id)
-        if result.get("error"):
-            return result
-
-        # Add summary information
-        if result and not result.get("error"):
-            summary = {
-                "table_id": table_id,
-                "status_retrieved": True
-            }
-            # Extract key status information if available
-            if "status" in result:
-                summary["workflow_status"] = result["status"]
-            if "workflowId" in result:
-                summary["workflow_id"] = result["workflowId"]
-            result["summary"] = summary
-            debug_print(f"Profile workflow status retrieved for table {table_id}")
-
-        return result
+        return await client.get_profile_workflow_status_for_table(table_id=table_id)
     except Exception as e:
         return {
             "error": True,

@@ -331,7 +331,7 @@ class BigeyeAPIClient:
             Dictionary containing the workflow ID and status of the queued job
         """
         return await self.make_request(
-            f"/api/v2/tables/{table_id}/profile",
+            f"/api/v2/tables/{table_id}/profile/status",
             method="GET"
         )
 
