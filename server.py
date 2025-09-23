@@ -2540,7 +2540,7 @@ async def get_profile_for_table(
     Example:
         # Get profile for table with ID 12345
         profile = await get_profile_for_table(table_id=12345)
-        print(f"Table has {profile.get('column_count', 0)} columns")
+        rows = profile.get("successfulProfile").get("fullRowCount")
     """
 
     client = get_api_client()
@@ -2552,7 +2552,7 @@ async def get_profile_for_table(
     except Exception as e:
         return {
             "error": True,
-            "message": f"Error getting profile for table: {str(e)}"
+            "message": f"Error getting profile for table {table_id}: {str(e)}"
         }
 
 @mcp.tool()
@@ -2574,7 +2574,7 @@ async def queue_table_profile(
     Example:
         # Queue profiling for table with ID 12345
         result = await queue_table_profile(table_id=12345)
-        workflow_id = result.get("workflowId")
+        workflow_id = result.get("workflowV2Id").get("workflowId")
     """
     client = get_api_client()
     debug_print(f"Queuing profile job for table {table_id}")
@@ -2584,7 +2584,7 @@ async def queue_table_profile(
     except Exception as e:
         return {
             "error": True,
-            "message": f"Error queuing profile for table: {str(e)}"
+            "message": f"Error queuing profile for table {table_id}: {str(e)}"
         }
 
 @mcp.tool()
@@ -2618,7 +2618,7 @@ async def get_profile_workflow_status_for_table(
     except Exception as e:
         return {
             "error": True,
-            "message": f"Error getting profile workflow status for table: {str(e)}"
+            "message": f"Error getting profile workflow status for table {table_id}: {str(e)}"
         }
 
 @mcp.tool()
