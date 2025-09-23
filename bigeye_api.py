@@ -300,6 +300,65 @@ class BigeyeAPIClient:
             f"/api/v2/lineage/nodes/{report_id}/upstream-issues",
             method="GET"
         )
+
+    async def get_profile_for_table(
+        self,
+        table_id: int
+    ) -> Dict[str, Any]:
+        """Get profile report for a table
+
+        Args:
+            report_id: The ID of the BI report to get upstream issues for
+
+        Returns:
+            Dictionary containing the profile report of the desired table
+        """
+        return await self.make_request(
+            f"/api/v2/tables/{table_id}/profile",
+            method="GET"
+        )
+
+    async def get_profile_workflow_status_for_table(
+        self,
+        table_id: int
+    ) -> Dict[str, Any]:
+        """Get profile report workflow status for a given table
+
+        Args:
+            report_id: The ID of the table to queue profiling workflow status for
+
+        Returns:
+            Dictionary containing the workflow ID and status of the queued job
+        """
+        return await self.make_request(
+            f"/api/v2/tables/{table_id}/profile/status",
+            method="GET"
+        )
+
+    async def queue_table_profile(
+        self,
+        table_id: int
+    ) -> Dict[str, Any]:
+        """Queue a profiling job for a given table
+
+        Args:
+            table_id: The ID of the table to queue profiling for
+
+        Returns:
+            Dictionary containing the workflow ID of the queued job
+        """
+
+        payload = {}
+        sampleSelection = {}
+        sampleSelection["sampleMethod"] = "SAMPLE_METHOD_STRONGLY_RANDOM_SAMPLE"
+        payload["sampleSelection"] = sampleSelection
+        payload["tableId"] = table_id
+
+        return await self.make_request(
+            f"/api/v2/tables/{table_id}/profile/queue",
+            method="POST",
+            json_data=payload
+        )
         
     async def get_issue_resolution_steps(
         self,
