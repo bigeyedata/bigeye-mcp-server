@@ -148,6 +148,25 @@ class BigeyeAPIClient:
                 "status": "error",
                 "message": str(e)
             }
+
+    async def fetch_related_issues(
+        self,
+        starting_issue_id: int
+    ) -> Dict[str, Any]:
+        """Fetch related issues for an issue. This will include upstream and downstream issues.
+
+        Args:
+            starting_issue_id: The issues for which to get the related issues
+
+        Returns:
+            Dictionary containing the related issues
+        """
+        print(f"[BIGEYE API DEBUG] Fetching related issues for issue {starting_issue_id}", file=sys.stderr)
+
+        return await self.make_request(
+            f"/api/v1/issues/{starting_issue_id}/suggested-merge",
+            method="GET"
+        )
             
     async def fetch_issues(
         self,
