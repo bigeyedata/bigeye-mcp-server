@@ -516,14 +516,14 @@ async def get_issues(
     page_cursor: Optional[str] = None
 ) -> Dict[str, Any]:
     """Get issues from the Bigeye API with optimized response size.
-    
+
     NOTE: For quick access to common issue queries, consider using these resources instead:
     - bigeye://issues/active - Returns only NEW and ACKNOWLEDGED issues with summaries
     - bigeye://issues/recent - Returns issues from last 7 days with resolution metrics
-    
+
     This tool is best for custom filtering by specific statuses or schemas.
     It fetches issues with only essential metadata and minimal event history.
-    
+
     Args:
         statuses: Optional list of issue statuses to filter by. Possible values:
             - ISSUE_STATUS_NEW
@@ -534,29 +534,29 @@ async def get_issues(
         schema_names: Optional list of schema names to filter issues by
         page_size: Optional number of issues to return per page (default: 20)
         page_cursor: Cursor for pagination
-        
+
     Returns:
         Dictionary containing issues with essential metadata only
     """
-    
+
     client = get_api_client()
     workspace_id = config.get('workspace_id')
-    
+
     # Safety check
     if not workspace_id:
         return {
             'error': 'Workspace ID not configured',
             'hint': 'Check your Claude Desktop configuration'
         }
-    
+
     debug_print(f"Fetching issues for workspace {workspace_id}")
     debug_print(f"Config state - Instance: {config['api_url']}, Workspace: {workspace_id}, Has API key: {bool(config.get('api_key'))}")
-    
+
     if statuses:
         debug_print(f"Filtering by statuses: {statuses}")
     if schema_names:
         debug_print(f"Filtering by schema names: {schema_names}")
-        
+
     result = await client.fetch_issues(
         workspace_id=workspace_id,  # Use the variable we captured above
         currentStatus=statuses,
@@ -565,11 +565,38 @@ async def get_issues(
         page_cursor=page_cursor,
         include_full_history=False  # Exclude full metric run history
     )
-    
+
     issue_count = len(result.get("issues", []))
     debug_print(f"Found {issue_count} issues")
-    
+
     return result
+
+@mcp.tool()
+async def get_related_issues(
+    starting_issue_id: int
+) -> Dict[str, Any]:
+    """Get issues that are related (either upstream or downstream) to a given issue
+    
+    This tool can be used to find the root cause issues and/or the most important issues
+    for a given issue. It can also find the starting point for resolving an issue
+    by finding the root cause issues for it.
+
+    IMPORTANT: If the user asks for the root causes of an issue, call this method.
+    The root causes are those issues that have the isRootCause property true.
+    If this method returns no issues, the original issue is the root cause.
+    
+    Args:
+        starting_issue_id: The id of the issue to start from
+        
+    Returns:
+        Dictionary containing issues related to the starting issue
+    """
+    
+    client = get_api_client()
+    
+    debug_print(f"Fetching issues for starting issue {starting_issue_id}")
+        
+    return await client.fetch_related_issues(starting_issue_id)
 
 @mcp.tool()
 async def get_table_issues(
@@ -1117,7 +1144,7 @@ async def lineage_get_node_issues(
             "message": f"Error getting lineage node issues: {str(e)}"
         }
 
-@mcp.tool()
+# @mcp.tool()
 async def lineage_analyze_upstream_causes(
     node_id: int,
     max_depth: Optional[int] = 5
@@ -2345,6 +2372,10 @@ async def search_tables(
     IMPORTANT: Always refer to tables by their FULL QUALIFIED NAME when discussing
     them with the user (e.g., "ORACLE.PROD_SCHEMA.ORDERS" not just "ORDERS").
     This avoids confusion about which database system the table belongs to.
+
+    IMPORTANT: Schema names can have periods in them. If the user asks for a table
+    `BIGEYE_INTERNAL.PUBLIC.FACT_METRIC_RUN`, the table name is `FACT_METRIC_RUN`
+    and the schema is `BIGEYE_INTERNAL.PUBLIC`.
     
     Args:
         table_name: Optional table name to search for (supports partial matching)
