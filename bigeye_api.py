@@ -175,10 +175,12 @@ class BigeyeAPIClient:
         schemaNames: Optional[List[str]] = None,
         page_size: Optional[int] = None,
         page_cursor: Optional[str] = None,
-        include_full_history: bool = False
+        include_full_history: bool = False,
+        compact: bool = False,
+        max_issues: Optional[int] = None
     ) -> Dict[str, Any]:
         """Fetch issues from the Bigeye API.
-        
+
         Args:
             workspace_id: The ID of the workspace to fetch issues from
             currentStatus: Optional list of issue statuses to filter by
@@ -187,79 +189,233 @@ class BigeyeAPIClient:
             page_size: Optional number of issues to return per page
             page_cursor: Cursor for pagination
             include_full_history: If False, strips out historical metric runs to reduce data size
-            
+            compact: If True, returns only minimal fields (id, name, status, table, schema).
+                    Use this for listing issues, then fetch details for specific issues.
+            max_issues: Maximum number of issues to return. If there are more issues,
+                       the response will include truncation info. Helps prevent context overload.
+
         Returns:
             Dictionary containing the issues
         """
         payload = {
             "workspaceId": workspace_id
         }
-        
+
         print(f"[BIGEYE API DEBUG] Fetching issues for workspace ID: {workspace_id}", file=sys.stderr)
-        
+        print(f"[BIGEYE API DEBUG] compact={compact}, max_issues={max_issues}", file=sys.stderr)
+
         # Only add page_size if explicitly set
         if page_size is not None:
             payload["pageSize"] = page_size
-        
+
         if currentStatus:
             payload["currentStatus"] = currentStatus
-            
+
         if schemaNames:
             payload["schemaNames"] = schemaNames
-            
+
         if page_cursor:
             payload["pageCursor"] = page_cursor
-            
+
         result = await self.make_request(
             "/api/v1/issues/fetch",
             method="POST",
             json_data=payload
         )
-        
-        # If we want to reduce the response size, strip out the events/metric runs
-        if not include_full_history and "issues" in result:
+
+        # Handle both "issues" (plural) and "issue" (singular) response formats
+        # The API sometimes returns "issue" as the key instead of "issues"
+        if "issue" in result and "issues" not in result:
+            all_issues = result.get("issue", [])
+            issues_key = "issue"
+        elif "issues" in result:
+            all_issues = result.get("issues", [])
+            issues_key = "issues"
+        else:
+            return result
+
+        total_count = len(all_issues)
+        truncated = False
+
+        # Apply max_issues limit if specified
+        if max_issues is not None and len(all_issues) > max_issues:
+            all_issues = all_issues[:max_issues]
+            truncated = True
+
+        # Compact mode: return only minimal identifying fields
+        if compact:
+            compact_issues = []
+            for issue in all_issues:
+                # Extract table/schema/warehouse from metricMetadata if not at top level
+                metadata = issue.get("metricMetadata", {})
+
+                compact_issue = {
+                    "id": issue.get("id"),
+                    "name": issue.get("name"),
+                    "currentStatus": issue.get("currentStatus"),
+                    "priority": issue.get("priority"),
+                    "summary": issue.get("summary"),
+                    "description": issue.get("description"),
+                    # Try top-level fields first, then fall back to metricMetadata
+                    "tableName": issue.get("tableName") or metadata.get("datasetName"),
+                    "columnName": issue.get("columnName") or metadata.get("fieldName"),
+                    "schemaName": issue.get("schemaName") or metadata.get("schemaName"),
+                    "warehouseName": issue.get("warehouseName") or metadata.get("warehouseName"),
+                    "isIncident": issue.get("issueType") == "ISSUE_TYPE_INCIDENT" or issue.get("isIncident", False),
+                    "alertCount": issue.get("alertCount"),
+                }
+                compact_issues.append(compact_issue)
+
+            # Normalize to always use "issues" key in output
+            result["issues"] = compact_issues
+            # Remove the original key if it was "issue"
+            if issues_key == "issue":
+                del result["issue"]
+            result["responseMode"] = "compact"
+            result["hint"] = "Use get_issue_details(issue_id) to fetch full details for a specific issue"
+
+        # Standard mode: strip out events/metric runs but keep essential fields
+        elif not include_full_history:
             filtered_issues = []
-            for issue in result.get("issues", []):
+            for issue in all_issues:
+                # Extract from metricMetadata if available
+                metadata = issue.get("metricMetadata", {})
+
                 # Create a new dict with ONLY essential fields
-                filtered_issue = {}
-                essential_fields = [
-                    "id", "name", "currentStatus", "priority", "description",
-                    "tableName", "columnName", "schemaName", "warehouseName",
-                    "createdAt", "updatedAt", "lastEventTime", "assignee",
-                    "owner", "labels", "tags", "isIncident", "parentIssueId",
-                    "alertId", "metricId", "tableId", "columnId"
-                ]
-                
-                # Copy only essential fields that exist
-                for field in essential_fields:
-                    if field in issue:
-                        filtered_issue[field] = issue[field]
-                
-                # Add simplified metric info if present
-                if "metric" in issue and issue["metric"]:
-                    filtered_issue["metric"] = {
-                        "id": issue["metric"].get("id"),
-                        "name": issue["metric"].get("name"),
-                        "type": issue["metric"].get("type"),
-                        "metricType": issue["metric"].get("metricType")
-                    }
-                
+                filtered_issue = {
+                    "id": issue.get("id"),
+                    "name": issue.get("name"),
+                    "currentStatus": issue.get("currentStatus"),
+                    "priority": issue.get("priority"),
+                    "summary": issue.get("summary"),
+                    "description": issue.get("description"),
+                    "tableName": issue.get("tableName") or metadata.get("datasetName"),
+                    "columnName": issue.get("columnName") or metadata.get("fieldName"),
+                    "schemaName": issue.get("schemaName") or metadata.get("schemaName"),
+                    "warehouseName": issue.get("warehouseName") or metadata.get("warehouseName"),
+                    "isIncident": issue.get("issueType") == "ISSUE_TYPE_INCIDENT" or issue.get("isIncident", False),
+                    "alertCount": issue.get("alertCount"),
+                    "openedTimeSeconds": issue.get("openedTimeSeconds"),
+                }
+
+                # Add assignee name if present
+                assignee = issue.get("assignee")
+                if assignee:
+                    filtered_issue["assignee"] = assignee.get("name") or assignee.get("email")
+
                 # Add only the most recent event summary if events exist
-                if "events" in issue and issue["events"] and len(issue["events"]) > 0:
-                    most_recent_event = issue["events"][0]
+                events = issue.get("events", [])
+                if events and len(events) > 0:
+                    most_recent_event = events[0]
+                    # Get description from metricEvent if present
+                    metric_event = most_recent_event.get("metricEvent", {})
                     filtered_issue["lastEvent"] = {
-                        "type": most_recent_event.get("type"),
                         "timestamp": most_recent_event.get("timestamp"),
-                        "message": most_recent_event.get("message")
+                        "description": metric_event.get("description") if metric_event else None
                     }
-                
+
                 filtered_issues.append(filtered_issue)
-            
-            # Replace the original issues with filtered ones
+
+            # Normalize to always use "issues" key in output
             result["issues"] = filtered_issues
-        
+            if issues_key == "issue":
+                del result["issue"]
+            result["responseMode"] = "standard"
+        else:
+            result["responseMode"] = "full"
+
+        # Add truncation metadata if we limited the results
+        if truncated:
+            result["truncated"] = True
+            result["totalAvailable"] = total_count
+            result["returnedCount"] = len(result["issues"])
+            result["truncationNote"] = f"Response limited to {max_issues} issues. Use pagination or filters to see more."
+
         return result
-        
+
+    async def fetch_single_issue(
+        self,
+        issue_id: int
+    ) -> Dict[str, Any]:
+        """Fetch detailed information for a single issue by its ID.
+
+        This endpoint returns the complete issue data including full event history,
+        metric details, and all metadata. Use this when you need complete details
+        for a specific issue after identifying it from a list.
+
+        Args:
+            issue_id: The internal database ID of the issue to fetch
+
+        Returns:
+            Dictionary containing the full issue details
+        """
+        print(f"[BIGEYE API DEBUG] Fetching single issue with ID: {issue_id}", file=sys.stderr)
+
+        return await self.make_request(
+            f"/api/v1/issues/{issue_id}",
+            method="GET"
+        )
+
+    async def search_issues_by_name(
+        self,
+        workspace_id: int,
+        name_query: str,
+        statuses: Optional[List[str]] = None,
+        exact_match: bool = False
+    ) -> Dict[str, Any]:
+        """Search for issues by their name field (display name/reference).
+
+        IMPORTANT: Issues have both an 'id' (internal database ID) and a 'name' (display reference).
+        When users say "incident 10921" or "issue 10921", they're referring to the 'name' field,
+        not the internal 'id' field.
+
+        Args:
+            workspace_id: The ID of the workspace to search in
+            name_query: The name (or partial name) to search for
+            statuses: Optional list of issue statuses to filter by
+            exact_match: If True, only return exact name matches. If False (default),
+                        returns partial matches (case-insensitive)
+
+        Returns:
+            Dictionary containing matching issues with essential metadata
+        """
+        print(f"[BIGEYE API DEBUG] Searching for issues with name containing: {name_query}", file=sys.stderr)
+
+        # Fetch all issues with the given status filters
+        # Note: We do client-side filtering by name since the API doesn't support name filtering
+        result = await self.fetch_issues(
+            workspace_id=workspace_id,
+            currentStatus=statuses,
+            page_size=100,  # Fetch more to increase chances of finding the issue
+            include_full_history=False
+        )
+
+        # Filter issues by name
+        if "issues" in result:
+            matching_issues = []
+
+            for issue in result.get("issues", []):
+                issue_name = issue.get("name", "")
+
+                if exact_match:
+                    # Exact match (case-insensitive)
+                    if issue_name.lower() == name_query.lower():
+                        matching_issues.append(issue)
+                else:
+                    # Partial match (case-insensitive)
+                    if name_query.lower() in issue_name.lower():
+                        matching_issues.append(issue)
+
+            print(f"[BIGEYE API DEBUG] Found {len(matching_issues)} issues matching '{name_query}'", file=sys.stderr)
+
+            # Return the filtered results
+            result["issues"] = matching_issues
+            result["totalCount"] = len(matching_issues)
+            result["searchQuery"] = name_query
+            result["exactMatch"] = exact_match
+
+        return result
+
     async def merge_issues(
         self,
         issue_ids: List[int],

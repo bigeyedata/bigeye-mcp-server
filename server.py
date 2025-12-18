@@ -79,7 +79,44 @@ mcp = FastMCP(
        communications with the user. Never say just "the ORDERS table" - say
        "the ORACLE.PROD_SCHEMA.ORDERS table" to be clear about which database
        system it belongs to.
-    
+
+    IMPORTANT: Understanding Issue and Incident References
+    =======================================================
+    Issues and incidents have TWO different identifiers - understanding the distinction is CRITICAL:
+
+    1. 'id' field - Internal database ID (e.g., 12345, 67890)
+       - This is the internal system identifier
+       - Users typically DON'T know this number
+       - Used for API operations like merge_issues(), update_issue(), etc.
+       - DO NOT use this when users reference an issue by number
+
+    2. 'name' field - Display name/reference (e.g., "10921", "data-quality-alert")
+       - This is what users see in the Bigeye UI
+       - This is what users will reference in conversations
+       - When a user says "incident 10921" or "issue 10921", they mean THIS field
+
+    WORKFLOW for Issue/Incident References:
+    ----------------------------------------
+    When a user mentions an issue or incident by number or name:
+
+    1. ALWAYS use search_issues_by_name() to find the issue
+       Example: User says "Show me incident 10921"
+       → Use search_issues_by_name(name_query="10921")
+
+    2. DO NOT try to use the number as an 'id' parameter in other tools
+       ❌ WRONG: get_related_issues(starting_issue_id=10921)
+       ✓ CORRECT: search_issues_by_name(name_query="10921") first,
+                  then use the returned 'id' field if needed
+
+    3. Present search results if multiple matches are found
+       - Show the issue name, status, description, and affected tables
+       - Ask user to confirm if needed
+
+    4. Only after finding the correct issue, use its 'id' field for other operations
+       - The 'id' from the search result can be used with get_related_issues()
+       - The 'id' from the search result can be used with update_issue()
+       - The 'id' from the search result can be used with merge_issues()
+
     Example interaction:
     User: "Check the health of the orders table"
     Assistant: "I found 3 tables with 'orders' in the name:
@@ -513,16 +550,21 @@ async def get_issues(
     statuses: Optional[List[str]] = None,
     schema_names: Optional[List[str]] = None,
     page_size: Optional[int] = None,
-    page_cursor: Optional[str] = None
+    page_cursor: Optional[str] = None,
+    compact: bool = True,
+    max_issues: Optional[int] = 15
 ) -> Dict[str, Any]:
     """Get issues from the Bigeye API with optimized response size.
+
+    RECOMMENDED WORKFLOW:
+    1. First call get_issues() with compact=True (default) to get a lightweight list
+    2. Then call get_issue_details(issue_id) for full details on specific issues
+
+    This prevents context window overload when there are many issues.
 
     NOTE: For quick access to common issue queries, consider using these resources instead:
     - bigeye://issues/active - Returns only NEW and ACKNOWLEDGED issues with summaries
     - bigeye://issues/recent - Returns issues from last 7 days with resolution metrics
-
-    This tool is best for custom filtering by specific statuses or schemas.
-    It fetches issues with only essential metadata and minimal event history.
 
     Args:
         statuses: Optional list of issue statuses to filter by. Possible values:
@@ -532,11 +574,21 @@ async def get_issues(
             - ISSUE_STATUS_MONITORING
             - ISSUE_STATUS_MERGED
         schema_names: Optional list of schema names to filter issues by
-        page_size: Optional number of issues to return per page (default: 20)
+        page_size: Optional number of issues to request from API per page (default: 20)
         page_cursor: Cursor for pagination
+        compact: If True (default), returns only minimal fields (id, name, status, table, schema).
+                If False, returns standard fields including description and metric info.
+                Use compact=True to list issues, then get_issue_details() for specifics.
+        max_issues: Maximum number of issues to return (default: 15). Prevents context overload.
+                   Set to None to return all issues (use with caution).
 
     Returns:
-        Dictionary containing issues with essential metadata only
+        Dictionary containing:
+        - issues: List of issues (compact or standard format based on compact parameter)
+        - responseMode: "compact" or "standard" indicating the detail level
+        - truncated: True if results were limited by max_issues
+        - totalAvailable: Total issues available (if truncated)
+        - hint: Guidance on fetching more details
     """
 
     client = get_api_client()
@@ -551,6 +603,7 @@ async def get_issues(
 
     debug_print(f"Fetching issues for workspace {workspace_id}")
     debug_print(f"Config state - Instance: {config['api_url']}, Workspace: {workspace_id}, Has API key: {bool(config.get('api_key'))}")
+    debug_print(f"compact={compact}, max_issues={max_issues}")
 
     if statuses:
         debug_print(f"Filtering by statuses: {statuses}")
@@ -558,16 +611,127 @@ async def get_issues(
         debug_print(f"Filtering by schema names: {schema_names}")
 
     result = await client.fetch_issues(
-        workspace_id=workspace_id,  # Use the variable we captured above
+        workspace_id=workspace_id,
         currentStatus=statuses,
         schemaNames=schema_names,
-        page_size=page_size if page_size else 20,  # Default to 20 issues
+        page_size=page_size if page_size else 20,
         page_cursor=page_cursor,
-        include_full_history=False  # Exclude full metric run history
+        include_full_history=False,
+        compact=compact,
+        max_issues=max_issues
     )
 
     issue_count = len(result.get("issues", []))
     debug_print(f"Found {issue_count} issues")
+
+    return result
+
+
+@mcp.tool()
+async def get_issue_details(
+    issue_id: int
+) -> Dict[str, Any]:
+    """Get full details for a specific issue by its internal ID.
+
+    Use this tool AFTER using get_issues() or search_issues_by_name() to identify
+    which issue you want details for. Those tools return the 'id' field which
+    should be passed to this tool.
+
+    This returns the complete issue data including:
+    - Full event history
+    - Metric details and configuration
+    - All metadata fields
+    - Resolution steps (if any)
+
+    Args:
+        issue_id: The internal database ID of the issue (from the 'id' field in issue lists)
+
+    Returns:
+        Dictionary containing full issue details
+
+    Example workflow:
+        1. get_issues(compact=True) → returns list with issue IDs
+        2. User asks about issue with id=12345
+        3. get_issue_details(issue_id=12345) → returns full details
+    """
+
+    client = get_api_client()
+
+    debug_print(f"Fetching details for issue ID: {issue_id}")
+
+    result = await client.fetch_single_issue(issue_id=issue_id)
+
+    return result
+
+@mcp.tool()
+async def search_issues_by_name(
+    name_query: str,
+    statuses: Optional[List[str]] = None,
+    exact_match: bool = False
+) -> Dict[str, Any]:
+    """Search for issues or incidents by their name/display reference.
+
+    CRITICAL UNDERSTANDING - Issue ID vs Name:
+    - Issues have an 'id' field (internal database ID like 12345) - users won't know this
+    - Issues have a 'name' field (display reference like "10921") - this is what users see and reference
+    - When a user says "incident 10921" or "issue 10921", they mean the 'name' field, NOT the 'id'
+
+    ALWAYS USE THIS TOOL when users reference an issue or incident by number (e.g., "incident 10921").
+
+    This tool searches for issues by their display name, NOT by their internal database ID.
+    It supports both exact and partial matching (case-insensitive).
+
+    Args:
+        name_query: The issue name or partial name to search for (e.g., "10921", "data-quality")
+        statuses: Optional list of issue statuses to filter by. Possible values:
+            - ISSUE_STATUS_NEW
+            - ISSUE_STATUS_ACKNOWLEDGED
+            - ISSUE_STATUS_CLOSED
+            - ISSUE_STATUS_MONITORING
+            - ISSUE_STATUS_MERGED
+        exact_match: If True, only return exact name matches. If False (default),
+                    returns partial matches (case-insensitive)
+
+    Returns:
+        Dictionary containing matching issues with:
+        - issues: List of matching issues
+        - totalCount: Number of matches found
+        - searchQuery: The query that was used
+        - exactMatch: Whether exact matching was used
+
+    Example:
+        User: "Show me incident 10921"
+        Response: Use search_issues_by_name(name_query="10921")
+
+        User: "Find all data quality issues"
+        Response: Use search_issues_by_name(name_query="data quality", exact_match=False)
+    """
+
+    client = get_api_client()
+    workspace_id = config.get('workspace_id')
+
+    # Safety check
+    if not workspace_id:
+        return {
+            'error': 'Workspace ID not configured',
+            'hint': 'Check your Claude Desktop configuration'
+        }
+
+    debug_print(f"Searching for issues with name: {name_query}")
+    debug_print(f"Exact match: {exact_match}")
+
+    if statuses:
+        debug_print(f"Filtering by statuses: {statuses}")
+
+    result = await client.search_issues_by_name(
+        workspace_id=workspace_id,
+        name_query=name_query,
+        statuses=statuses,
+        exact_match=exact_match
+    )
+
+    match_count = len(result.get("issues", []))
+    debug_print(f"Found {match_count} issues matching '{name_query}'")
 
     return result
 

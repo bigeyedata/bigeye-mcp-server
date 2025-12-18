@@ -19,26 +19,98 @@ This file contains important information and to-do items for Claude when working
 
 This workflow is enforced in tool descriptions with "ALWAYS USE THIS TOOL FIRST" instructions.
 
+### When Users Ask About Issues or Incidents ✅ IMPLEMENTED
+
+**CRITICAL UNDERSTANDING - Issue ID vs Name:**
+- Issues have an `id` field (internal database ID like 12345) - users typically DON'T know this
+- Issues have a `name` field (display reference like "10921") - this is what users see and reference
+- When users say "incident 10921" or "issue 10921", they mean the `name` field, NOT the `id` field
+
+**Workflow:**
+1. **ALWAYS use `search_issues_by_name()` first** when users reference an issue/incident by number or name
+2. Present the search results with issue name, status, description, and affected tables
+3. Use the returned `id` field for subsequent operations (get_related_issues, update_issue, merge_issues, etc.)
+
+**Example:**
+```
+User: "Show me incident 10921"
+❌ WRONG: get_related_issues(starting_issue_id=10921)
+✓ CORRECT: search_issues_by_name(name_query="10921")
+           → Then use the returned 'id' field for other operations
+```
+
+**Implementation Details:**
+- Added `search_issues_by_name()` method to BigeyeAPIClient (bigeye_api.py:263-321)
+- Added `search_issues_by_name()` tool to server.py (server.py:574-644)
+- Supports both exact and partial matching (case-insensitive)
+- Performs client-side filtering since the Bigeye API doesn't support name filtering
+- Updated system instructions to clarify the id vs name distinction (server.py:83-119)
+
 ## Known Issues & To-Do Items
 
 ### High Priority
 
-#### 1. ~~Fix Get Issues Response Size~~ ✅ COMPLETED
+#### 1. ~~Fix Get Issues Response Size~~ ✅ COMPLETED (v3)
 **Issue**: The `get_issues` tool responses are too large. The API is returning not only the issues but also all associated run history, which can be extremely long and overwhelm the context.
 
-**FIXED**: Added response optimization in `fetch_issues()` that:
+**FIXED (Original)**: Added response optimization in `fetch_issues()` that:
 - Strips out historical metric runs, keeping only essential metadata
 - Limits events to just the most recent one
 - Removes large fields like `metricRunHistory`, `detailedHistory`, `allEvents`
 - Added `include_full_history` parameter (defaults to False) for when full history is needed
 - Set default page_size to 20 to limit results
 
+**FIXED (v2 - Additional Improvements)**:
+Added smart pagination with compact mode and separate issue details endpoint:
+
+1. **Compact Mode** (`compact=True`, default):
+   - Returns only minimal fields: id, name, status, priority, table, schema, warehouse, isIncident
+   - Much smaller response footprint for listing issues
+   - Includes hint to use `get_issue_details()` for full information
+
+2. **Response Size Limiting** (`max_issues=15`, default):
+   - Limits number of issues returned to prevent context overload
+   - Response includes `truncated`, `totalAvailable`, `returnedCount` metadata
+   - Can be set to `None` to return all issues (use with caution)
+
+3. **New `get_issue_details(issue_id)` Tool**:
+   - Fetches complete details for a single issue by ID
+   - Use after identifying issues from `get_issues()` or `search_issues_by_name()`
+   - Returns full event history, metric details, all metadata
+
+**FIXED (v3 - API Response Format Fix)**:
+Fixed issue where compact mode wasn't working because:
+- The Bigeye API returns `issue` (singular) as key, not `issues` (plural)
+- Issue fields like tableName/schemaName are nested in `metricMetadata`, not at top level
+- Large fields like `metricConfiguration` and full `events` arrays were still being returned
+
+Changes:
+- Handle both `issue` and `issues` response keys
+- Extract table/column/schema/warehouse from `metricMetadata` when not at top level
+- Properly strip `metricConfiguration`, full `events` array, and other large nested objects
+- Added `summary` and `alertCount` to compact response for better context
+- Normalize output to always use `issues` key
+
+**Recommended Workflow**:
+```
+1. get_issues(compact=True) → lightweight list of issues
+2. User identifies issue of interest (e.g., id=12345)
+3. get_issue_details(issue_id=12345) → full details for that issue
+```
+
+**Implementation Details**:
+- `bigeye_api.py`: Added `compact` and `max_issues` parameters to `fetch_issues()`
+- `bigeye_api.py`: Added `fetch_single_issue(issue_id)` method
+- `bigeye_api.py`: Fixed response parsing to handle `issue` vs `issues` keys and extract from `metricMetadata`
+- `server.py`: Updated `get_issues()` tool with new parameters (compact=True, max_issues=15 defaults)
+- `server.py`: Added `get_issue_details()` tool
+
 ### Future Improvements
 
 - Add more granular filtering options for search results
 - Implement caching for frequently accessed data
 - Add support for bulk operations on issues
-- Consider adding a tool to get issue details separately from the list
+- ~~Consider adding a tool to get issue details separately from the list~~ ✅ DONE
 - **Search improvements needed**:
   - Add automatic space-to-underscore conversion in table/column searches
   - Implement fuzzy matching or wildcards for more flexible searches
