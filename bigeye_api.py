@@ -1272,7 +1272,24 @@ class BigeyeAPIClient:
             method="GET",
             params=params
         )
-        
+
+    async def get_sources(
+        self,
+        workspace_id: int
+    ) -> Dict[str, Any]:
+        """Get all data sources (warehouses) connected to the workspace.
+
+        Args:
+            workspace_id: The workspace ID
+
+        Returns:
+            Dictionary containing list of data sources
+        """
+        return await self.make_request(
+            f"/api/v1/workspaces/{workspace_id}/sources",
+            method="GET"
+        )
+
     async def delete_lineage_node(
         self,
         node_id: int,

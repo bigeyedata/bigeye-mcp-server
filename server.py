@@ -54,27 +54,27 @@ mcp = FastMCP(
     - Use TOOLS for: Specific filtering, actions, updates, complex analysis
     
     Example: "Show me active issues" → Use resource bigeye://issues/active
-    Example: "Show issues for schema X" → Use get_issues() tool with filters
-    
+    Example: "Show issues for schema X" → Use list_issues() tool with filters
+
     IMPORTANT: Table and Column Search Workflow
     ============================================
     When a user asks about a specific table, column, or schema by name:
-    
+
     1. ALWAYS search first using the appropriate search tool:
        - Use search_tables() when asked about a table
        - Use search_columns() when asked about a column
        - Use search_schemas() when asked about a schema
-    
+
     2. Present the search results to the user as a numbered list, showing:
        - Full qualified name (e.g., ORACLE.PROD_SCHEMA.ORDERS)
        - Database system it belongs to
        - Any relevant metadata (row count, column count, etc.)
-    
+
     3. Ask the user to confirm which specific object they meant by number or name
-    
-    4. Only after the user confirms the specific object should you proceed with 
+
+    4. Only after the user confirms the specific object should you proceed with
        the rest of their request (checking health, analyzing issues, etc.)
-    
+
     5. ALWAYS refer to tables and columns by their FULL QUALIFIED NAME in all
        communications with the user. Never say just "the ORDERS table" - say
        "the ORACLE.PROD_SCHEMA.ORDERS table" to be clear about which database
@@ -87,7 +87,7 @@ mcp = FastMCP(
     1. 'id' field - Internal database ID (e.g., 12345, 67890)
        - This is the internal system identifier
        - Users typically DON'T know this number
-       - Used for API operations like merge_issues(), update_issue(), etc.
+       - Used for API operations like create_incident(), update_issue(), etc.
        - DO NOT use this when users reference an issue by number
 
     2. 'name' field - Display name/reference (e.g., "10921", "data-quality-alert")
@@ -99,13 +99,13 @@ mcp = FastMCP(
     ----------------------------------------
     When a user mentions an issue or incident by number or name:
 
-    1. ALWAYS use search_issues_by_name() to find the issue
+    1. ALWAYS use search_issues() to find the issue
        Example: User says "Show me incident 10921"
-       → Use search_issues_by_name(name_query="10921")
+       → Use search_issues(name_query="10921")
 
     2. DO NOT try to use the number as an 'id' parameter in other tools
-       ❌ WRONG: get_related_issues(starting_issue_id=10921)
-       ✓ CORRECT: search_issues_by_name(name_query="10921") first,
+       ❌ WRONG: list_related_issues(starting_issue_id=10921)
+       ✓ CORRECT: search_issues(name_query="10921") first,
                   then use the returned 'id' field if needed
 
     3. Present search results if multiple matches are found
@@ -113,18 +113,18 @@ mcp = FastMCP(
        - Ask user to confirm if needed
 
     4. Only after finding the correct issue, use its 'id' field for other operations
-       - The 'id' from the search result can be used with get_related_issues()
+       - The 'id' from the search result can be used with list_related_issues()
        - The 'id' from the search result can be used with update_issue()
-       - The 'id' from the search result can be used with merge_issues()
+       - The 'id' from the search result can be used with create_incident()
 
     Example interaction:
     User: "Check the health of the orders table"
     Assistant: "I found 3 tables with 'orders' in the name:
                 1. ORACLE.PROD_SCHEMA.ORDERS (in Oracle database)
-                2. SNOWFLAKE.ANALYTICS.ORDERS (in Snowflake database)  
+                2. SNOWFLAKE.ANALYTICS.ORDERS (in Snowflake database)
                 3. POSTGRES.PUBLIC.ORDERS (in Postgres database)
                 Which one would you like me to check?"
-    
+
     This ensures accuracy and prevents operations on the wrong database objects.
     """
 )
@@ -536,9 +536,9 @@ async def list_resources() -> Dict[str, Any]:
     }
 
 @mcp.tool()
-async def check_health() -> Dict[str, Any]:
-    """Check the health of the Bigeye API."""
-    
+async def get_health_status() -> Dict[str, Any]:
+    """Check the health and connectivity of the Bigeye API. Returns API status and version."""
+
     client = get_api_client()
     debug_print("Checking API health")
     result = await client.check_health()
@@ -546,7 +546,7 @@ async def check_health() -> Dict[str, Any]:
     return result
 
 @mcp.tool()
-async def get_issues(
+async def list_issues(
     statuses: Optional[List[str]] = None,
     schema_names: Optional[List[str]] = None,
     page_size: Optional[int] = None,
@@ -554,17 +554,7 @@ async def get_issues(
     compact: bool = True,
     max_issues: Optional[int] = 15
 ) -> Dict[str, Any]:
-    """Get issues from the Bigeye API with optimized response size.
-
-    RECOMMENDED WORKFLOW:
-    1. First call get_issues() with compact=True (default) to get a lightweight list
-    2. Then call get_issue_details(issue_id) for full details on specific issues
-
-    This prevents context window overload when there are many issues.
-
-    NOTE: For quick access to common issue queries, consider using these resources instead:
-    - bigeye://issues/active - Returns only NEW and ACKNOWLEDGED issues with summaries
-    - bigeye://issues/recent - Returns issues from last 7 days with resolution metrics
+    """List data quality issues across the workspace. Supports filtering by status (ISSUE_STATUS_NEW, ISSUE_STATUS_ACKNOWLEDGED, ISSUE_STATUS_CLOSED, ISSUE_STATUS_MONITORING, ISSUE_STATUS_MERGED) and schema. Returns compact summaries by default. Best for broad views like 'show all open issues'. For issues on a specific table, use list_table_issues instead.
 
     Args:
         statuses: Optional list of issue statuses to filter by. Possible values:
@@ -578,17 +568,9 @@ async def get_issues(
         page_cursor: Cursor for pagination
         compact: If True (default), returns only minimal fields (id, name, status, table, schema).
                 If False, returns standard fields including description and metric info.
-                Use compact=True to list issues, then get_issue_details() for specifics.
+                Use compact=True to list issues, then get_issue() for specifics.
         max_issues: Maximum number of issues to return (default: 15). Prevents context overload.
                    Set to None to return all issues (use with caution).
-
-    Returns:
-        Dictionary containing:
-        - issues: List of issues (compact or standard format based on compact parameter)
-        - responseMode: "compact" or "standard" indicating the detail level
-        - truncated: True if results were limited by max_issues
-        - totalAvailable: Total issues available (if truncated)
-        - hint: Guidance on fetching more details
     """
 
     client = get_api_client()
@@ -628,31 +610,13 @@ async def get_issues(
 
 
 @mcp.tool()
-async def get_issue_details(
+async def get_issue(
     issue_id: int
 ) -> Dict[str, Any]:
-    """Get full details for a specific issue by its internal ID.
-
-    Use this tool AFTER using get_issues() or search_issues_by_name() to identify
-    which issue you want details for. Those tools return the 'id' field which
-    should be passed to this tool.
-
-    This returns the complete issue data including:
-    - Full event history
-    - Metric details and configuration
-    - All metadata fields
-    - Resolution steps (if any)
+    """Get full details for a single issue by its internal ID (not display name). Returns event history, metric details, and metadata. To find an issue's internal ID from its display name, use search_issues first.
 
     Args:
         issue_id: The internal database ID of the issue (from the 'id' field in issue lists)
-
-    Returns:
-        Dictionary containing full issue details
-
-    Example workflow:
-        1. get_issues(compact=True) → returns list with issue IDs
-        2. User asks about issue with id=12345
-        3. get_issue_details(issue_id=12345) → returns full details
     """
 
     client = get_api_client()
@@ -664,22 +628,12 @@ async def get_issue_details(
     return result
 
 @mcp.tool()
-async def search_issues_by_name(
+async def search_issues(
     name_query: str,
     statuses: Optional[List[str]] = None,
     exact_match: bool = False
 ) -> Dict[str, Any]:
-    """Search for issues or incidents by their name/display reference.
-
-    CRITICAL UNDERSTANDING - Issue ID vs Name:
-    - Issues have an 'id' field (internal database ID like 12345) - users won't know this
-    - Issues have a 'name' field (display reference like "10921") - this is what users see and reference
-    - When a user says "incident 10921" or "issue 10921", they mean the 'name' field, NOT the 'id'
-
-    ALWAYS USE THIS TOOL when users reference an issue or incident by number (e.g., "incident 10921").
-
-    This tool searches for issues by their display name, NOT by their internal database ID.
-    It supports both exact and partial matching (case-insensitive).
+    """Find issues or incidents by their display name — the number shown in the Bigeye UI (e.g. '10921'). ALWAYS use this when a user references an issue by number. Returns matching issues with their internal IDs for use with get_issue, update_issue, and other tools.
 
     Args:
         name_query: The issue name or partial name to search for (e.g., "10921", "data-quality")
@@ -691,20 +645,6 @@ async def search_issues_by_name(
             - ISSUE_STATUS_MERGED
         exact_match: If True, only return exact name matches. If False (default),
                     returns partial matches (case-insensitive)
-
-    Returns:
-        Dictionary containing matching issues with:
-        - issues: List of matching issues
-        - totalCount: Number of matches found
-        - searchQuery: The query that was used
-        - exactMatch: Whether exact matching was used
-
-    Example:
-        User: "Show me incident 10921"
-        Response: Use search_issues_by_name(name_query="10921")
-
-        User: "Find all data quality issues"
-        Response: Use search_issues_by_name(name_query="data quality", exact_match=False)
     """
 
     client = get_api_client()
@@ -736,24 +676,13 @@ async def search_issues_by_name(
     return result
 
 @mcp.tool()
-async def get_related_issues(
+async def list_related_issues(
     starting_issue_id: int
 ) -> Dict[str, Any]:
-    """Get issues that are related (either upstream or downstream) to a given issue
-    
-    This tool can be used to find the root cause issues and/or the most important issues
-    for a given issue. It can also find the starting point for resolving an issue
-    by finding the root cause issues for it.
+    """List issues related to a given issue via upstream/downstream lineage. Returns related issues with root cause flags (isRootCause=true). Requires internal issue ID.
 
-    IMPORTANT: If the user asks for the root causes of an issue, call this method.
-    The root causes are those issues that have the isRootCause property true.
-    If this method returns no issues, the original issue is the root cause.
-    
     Args:
-        starting_issue_id: The id of the issue to start from
-        
-    Returns:
-        Dictionary containing issues related to the starting issue
+        starting_issue_id: The internal ID of the issue to find related issues for
     """
     
     client = get_api_client()
@@ -763,28 +692,14 @@ async def get_related_issues(
     return await client.fetch_related_issues(starting_issue_id)
 
 @mcp.tool()
-async def get_table_issues(
+async def list_table_issues(
     table_name: str,
     warehouse_name: Optional[str] = None,
     schema_name: Optional[str] = None,
     statuses: Optional[List[str]] = None
 ) -> Dict[str, Any]:
-    """Get data quality issues for a specific table.
-    
-    IMPORTANT: Before using this tool, you should use search_tables() to find and confirm
-    the exact table the user is referring to. Only use this tool AFTER the user has
-    confirmed which specific table they mean.
-    
-    IMPORTANT: When reporting issues to the user, always use the FULL QUALIFIED NAME
-    of the table (e.g., "ORACLE.PROD_SCHEMA.ORDERS" not just "ORDERS table").
-    
-    NOTE: For general issue monitoring, consider using these resources instead:
-    - bigeye://issues/active - For current active issues across all tables
-    - bigeye://issues/recent - For recent issue activity and resolution patterns
-    
-    This tool fetches all issues related to a specific table in Bigeye,
-    making it easier to check data quality for individual tables.
-    
+    """List data quality issues for a specific table by name. Best for investigating a known table. For workspace-wide issues use list_issues. Requires table_name.
+
     Args:
         table_name: Name of the table (e.g., "ORDERS")
         warehouse_name: Optional warehouse name (e.g., "ORACLE", "SNOWFLAKE")
@@ -795,20 +710,6 @@ async def get_table_issues(
             - ISSUE_STATUS_CLOSED
             - ISSUE_STATUS_MONITORING
             - ISSUE_STATUS_MERGED
-            
-    Returns:
-        Dictionary containing issues for the specific table
-        
-    Example:
-        # Get all issues for the ORDERS table
-        await get_table_issues(table_name="ORDERS")
-        
-        # Get only new issues for ORDERS table in PROD_REPL schema
-        await get_table_issues(
-            table_name="ORDERS",
-            schema_name="PROD_REPL",
-            statuses=["ISSUE_STATUS_NEW"]
-        )
     """
     
     client = get_api_client()
@@ -862,36 +763,17 @@ async def get_table_issues(
         }
 
 @mcp.tool()
-async def analyze_table_data_quality(
+async def get_table_quality_report(
     table_name: str,
     schema_name: Optional[str] = None,
     warehouse_name: Optional[str] = None
 ) -> Dict[str, Any]:
-    """Analyze data quality for a specific table including issues and metrics.
-    
-    IMPORTANT: Before using this tool, you MUST use search_tables() first to find 
-    and confirm the exact table the user is referring to. Only use this tool AFTER 
-    the user has confirmed which specific table they mean.
-    
-    This comprehensive tool checks:
-    1. If the table exists in Bigeye's catalog
-    2. What data quality metrics are configured
-    3. What issues (if any) exist for the table
-    
+    """Comprehensive quality report for a table: catalog metadata + configured metrics + active issues. WARNING: expensive multi-API-call operation. Use list_table_issues if you only need issues, or get_monitor_coverage (knowledgebase) for coverage gaps.
+
     Args:
         table_name: Name of the table to analyze (e.g., "ORDERS")
         schema_name: Optional schema name (e.g., "PROD_REPL")
         warehouse_name: Optional warehouse name (e.g., "SNOWFLAKE")
-        
-    Returns:
-        Comprehensive data quality analysis for the table
-        
-    Example:
-        # Analyze the ORDERS table
-        await analyze_table_data_quality(
-            table_name="ORDERS",
-            schema_name="PROD_REPL"
-        )
     """
     
     client = get_api_client()
@@ -1006,25 +888,18 @@ async def analyze_table_data_quality(
         }
 
 @mcp.tool()
-async def merge_issues(
+async def create_incident(
     issue_ids: List[int],
     existing_incident_id: Optional[int] = None,
     incident_name: Optional[str] = None
 ) -> Dict[str, Any]:
-    """Merge multiple issues into a single incident.
-    
-    
-    This tool can either create a new incident or merge issues into an existing incident.
-    
+    """Create an incident by merging related issues, or add issues to an existing incident. Requires at least 2 issue IDs for new incidents, or 1 issue ID plus an existing_incident_id.
+
     Args:
-        issue_ids: List of issue IDs to merge (must contain at least 2 issues when creating new incident, 
-                  or at least 1 when merging into existing incident)
+        issue_ids: List of issue IDs to merge (at least 2 for new incident, at least 1 for existing)
         existing_incident_id: Optional ID of an existing incident to merge issues into.
                              If not provided, a new incident will be created.
-        incident_name: Optional name for the incident (applies to both new and existing incidents)
-        
-    Returns:
-        Dictionary containing the merge response with the created/updated incident
+        incident_name: Optional name for the incident
     """
     
     # Validation
@@ -1062,19 +937,13 @@ async def merge_issues(
         }
 
 @mcp.tool()
-async def get_issue_resolution_steps(
+async def get_resolution_steps(
     issue_id: int
 ) -> Dict[str, Any]:
-    """Get resolution steps for an issue or incident.
-    
-    This tool fetches the current resolution steps for an issue or incident. 
-    These steps provide guidance on how to resolve the data quality issue.
-    
+    """Get recommended resolution steps for an issue. Returns step-by-step guidance for remediation. Requires internal issue ID.
+
     Args:
-        issue_id: The ID of the issue or incident to get resolution steps for
-        
-    Returns:
-        Dictionary containing the resolution steps for the issue
+        issue_id: The internal ID of the issue to get resolution steps for
     """
     
     client = get_api_client()
@@ -1099,31 +968,14 @@ async def update_issue(
     priority: Optional[str] = None,
     message: Optional[str] = None
 ) -> Dict[str, Any]:
-    """Update an issue with status, priority, and/or add a timeline message.
-    
-    This tool allows you to update various aspects of an issue in a single request.
-    
+    """Update an issue's status, priority, or add a timeline message. Valid statuses: ISSUE_STATUS_NEW, ISSUE_STATUS_ACKNOWLEDGED, ISSUE_STATUS_CLOSED, ISSUE_STATUS_MONITORING, ISSUE_STATUS_MERGED. When closing, requires a closing_label (METRIC_RUN_LABEL_TRUE_NEGATIVE, METRIC_RUN_LABEL_FALSE_POSITIVE, etc.).
+
     Args:
         issue_id: The ID of the issue to update
-        new_status: New status for the issue. Possible values:
-            - ISSUE_STATUS_NEW
-            - ISSUE_STATUS_ACKNOWLEDGED  
-            - ISSUE_STATUS_CLOSED
-            - ISSUE_STATUS_MONITORING
-            - ISSUE_STATUS_MERGED
-        closing_label: Required when new_status is ISSUE_STATUS_CLOSED. Possible values:
-            - METRIC_RUN_LABEL_TRUE_NEGATIVE
-            - METRIC_RUN_LABEL_FALSE_NEGATIVE
-            - METRIC_RUN_LABEL_TRUE_POSITIVE
-            - METRIC_RUN_LABEL_FALSE_POSITIVE
-        priority: New priority for the issue. Possible values:
-            - ISSUE_PRIORITY_LOW
-            - ISSUE_PRIORITY_MED
-            - ISSUE_PRIORITY_HIGH
+        new_status: New status for the issue
+        closing_label: Required when new_status is ISSUE_STATUS_CLOSED
+        priority: New priority (ISSUE_PRIORITY_LOW, ISSUE_PRIORITY_MED, ISSUE_PRIORITY_HIGH)
         message: Timeline message to add to the issue
-        
-    Returns:
-        Dictionary containing the API response with the updated issue information
     """
     
     # Validation
@@ -1159,24 +1011,19 @@ async def update_issue(
         }
 
 @mcp.tool()
-async def unmerge_issues(
+async def delete_incident_members(
     issue_ids: Optional[List[int]] = None,
     parent_issue_ids: Optional[List[int]] = None,
     assignee_id: Optional[int] = None,
     new_status: Optional[str] = None
 ) -> Dict[str, Any]:
-    """Unmerge issues from incidents they have been merged into.
-    
-    This tool removes issues from incidents, making them independent issues again.
-    
+    """Remove issues from an incident. Specify individual issue_ids to unmerge, or parent_issue_ids to unmerge all children from an incident.
+
     Args:
         issue_ids: Optional list of specific issue IDs to unmerge from their incidents
         parent_issue_ids: Optional list of incident IDs to unmerge all child issues from
         assignee_id: Optional user ID to assign the unmerged issues to
         new_status: Optional new status for the unmerged issues
-        
-    Returns:
-        Dictionary containing the unmerge response with success/failure details
     """
     
     # Validation
@@ -1206,28 +1053,77 @@ async def unmerge_issues(
         }
 
 @mcp.tool()
-async def lineage_get_graph(
+async def list_table_metrics(
+    table_name: str,
+    schema_name: Optional[str] = None
+) -> Dict[str, Any]:
+    """List all metrics (monitors) configured on a table from the live Bigeye API. Best for: getting current metric configurations. For cached monitor data, use list_table_monitors (knowledgebase) instead.
+
+    Args:
+        table_name: Table name to get metrics for
+        schema_name: Optional schema name to narrow the search
+    """
+    client = get_api_client()
+    workspace_id = config.get('workspace_id')
+
+    if not workspace_id:
+        return {
+            'error': 'Workspace ID not configured',
+            'hint': 'Check your Claude Desktop configuration'
+        }
+
+    debug_print(f"Fetching metrics for table {table_name}")
+
+    try:
+        result = await client.get_table_metrics(
+            workspace_id=workspace_id,
+            table_name=table_name,
+            schema_name=schema_name
+        )
+        return result
+    except Exception as e:
+        return {
+            "error": True,
+            "message": f"Error fetching table metrics: {str(e)}"
+        }
+
+@mcp.tool()
+async def list_data_sources() -> Dict[str, Any]:
+    """List all data sources (warehouses) connected to Bigeye. Returns source names, types (SNOWFLAKE, DATABRICKS, etc.), and connection details."""
+    client = get_api_client()
+    workspace_id = config.get('workspace_id')
+
+    if not workspace_id:
+        return {
+            'error': 'Workspace ID not configured',
+            'hint': 'Check your Claude Desktop configuration'
+        }
+
+    debug_print("Fetching data sources")
+
+    try:
+        result = await client.get_sources(workspace_id=workspace_id)
+        return result
+    except Exception as e:
+        return {
+            "error": True,
+            "message": f"Error fetching data sources: {str(e)}"
+        }
+
+@mcp.tool()
+async def get_lineage_graph(
     node_id: int,
     direction: str = "bidirectional",
     max_depth: Optional[int] = None,
     include_issues: bool = True
 ) -> Dict[str, Any]:
-    """Get the complete lineage graph for a data entity.
-    
-    This tool retrieves the data lineage graph for a specific node, showing all upstream
-    and/or downstream dependencies.
-    
+    """Get the full lineage graph (upstream/downstream/both) from a starting node. Returns nodes and edges showing data flow. Requires node_id from search_lineage_nodes.
+
     Args:
-        node_id: The ID of the lineage node (table, column, etc.) to analyze
-        direction: Direction to traverse the lineage graph:
-            - "bidirectional" (default): Get both upstream and downstream
-            - "upstream": Only get upstream dependencies  
-            - "downstream": Only get downstream dependencies
+        node_id: The ID of the lineage node to get the graph for
+        direction: Direction to traverse: "bidirectional" (default), "upstream", or "downstream"
         max_depth: Maximum depth to traverse (optional)
         include_issues: Whether to include issue counts for each node (default: True)
-        
-    Returns:
-        Dictionary containing the complete lineage graph
     """
     
     client = get_api_client()
@@ -1249,18 +1145,13 @@ async def lineage_get_graph(
         }
 
 @mcp.tool()
-async def lineage_get_node(
+async def get_lineage_node(
     node_id: int
 ) -> Dict[str, Any]:
-    """Get details for a specific lineage node to verify it exists and check its properties.
-    
-    This tool retrieves basic information about a lineage node.
-    
+    """Get details for a specific lineage node (type, name, properties). Requires node_id.
+
     Args:
         node_id: The ID of the lineage node to get details for
-        
-    Returns:
-        Dictionary containing the lineage node details
     """
     
     client = get_api_client()
@@ -1278,19 +1169,13 @@ async def lineage_get_node(
         }
 
 @mcp.tool()
-async def lineage_get_node_issues(
+async def list_lineage_node_issues(
     node_id: int
 ) -> Dict[str, Any]:
-    """Get all data quality issues affecting a specific lineage node.
-    
-    This tool retrieves all issues that are currently affecting a particular node
-    in the data lineage graph.
-    
+    """List issues for a lineage node by its node_id. Best for when you already have a node_id from search_lineage_nodes. If you only have a table name, use list_table_issues instead.
+
     Args:
         node_id: The ID of the lineage node to get issues for
-        
-    Returns:
-        Dictionary containing all issues for the lineage node
     """
     
     client = get_api_client()
@@ -1308,29 +1193,23 @@ async def lineage_get_node_issues(
             "message": f"Error getting lineage node issues: {str(e)}"
         }
 
-# @mcp.tool()
-async def lineage_analyze_upstream_causes(
+@mcp.tool()
+async def get_upstream_root_causes(
     node_id: int,
     max_depth: Optional[int] = 5
 ) -> Dict[str, Any]:
-    """Analyze upstream lineage to identify root causes of data quality issues.
-    
-    This tool performs upstream root cause analysis by traversing the data lineage
-    backwards from a given node.
-    
+    """Analyze upstream lineage to identify root causes of data quality issues. Traverses upstream from a node to find the origin of problems. Requires node_id.
+
     Args:
         node_id: The ID of the lineage node where issues are occurring
         max_depth: Maximum depth to search upstream (default: 5)
-        
-    Returns:
-        Dictionary containing root cause analysis
     """
     
     debug_print(f"Analyzing upstream root causes for node {node_id}")
     
     try:
         # Get upstream lineage graph
-        upstream_result = await lineage_get_graph(
+        upstream_result = await get_lineage_graph(
             node_id=node_id,
             direction="upstream",
             max_depth=max_depth,
@@ -1413,36 +1292,26 @@ async def lineage_analyze_upstream_causes(
         }
 
 @mcp.tool()
-async def lineage_analyze_downstream_impact(
+async def get_downstream_impact(
     node_id: int,
     max_depth: Optional[int] = 5,
     include_integration_entities: bool = True,
     impact_focus: Optional[str] = "all"
 ) -> Dict[str, Any]:
-    """Analyze downstream impact of data quality issues.
-    
-    This tool performs downstream impact analysis to understand how data quality issues
-    in a given node affect downstream consumers. Can focus on specific types of impact.
-    
+    """Analyze downstream impact of issues at a lineage node, categorized by type (analytics, data products, critical). Returns severity assessment and stakeholder notifications. Requires node_id.
+
     Args:
         node_id: The ID of the lineage node with potential data quality issues
         max_depth: Maximum depth to search downstream (default: 5)
         include_integration_entities: Include BI tools, dashboards, etc. (default: True)
-        impact_focus: Type of impact to focus on (default: "all"):
-            - "all": Show all downstream impacts
-            - "analytics": Only BI/reporting tools (Tableau, PowerBI, Looker, etc.)
-            - "data_products": Final tables/views that are likely data products
-            - "critical": Only nodes with existing issues or high metric counts
-        
-    Returns:
-        Dictionary containing impact analysis with categorized impacts
+        impact_focus: Type of impact to focus on: "all" (default), "analytics", "data_products", or "critical"
     """
     
     debug_print(f"Analyzing downstream impact for node {node_id} with focus: {impact_focus}")
     
     try:
         # Get downstream lineage graph
-        downstream_result = await lineage_get_graph(
+        downstream_result = await get_lineage_graph(
             node_id=node_id,
             direction="downstream",
             max_depth=max_depth,
@@ -1633,31 +1502,26 @@ async def lineage_analyze_downstream_impact(
         }
 
 @mcp.tool()
-async def lineage_trace_issue_path(
+async def get_issue_lineage_trace(
     issue_id: int,
     include_root_cause_analysis: bool = True,
     include_impact_analysis: bool = True,
     max_depth: Optional[int] = 5
 ) -> Dict[str, Any]:
-    """Trace the complete lineage path for a data quality issue from root cause to downstream impact.
-    
-    This tool provides a comprehensive analysis by combining issue details with lineage tracing.
-    
+    """Trace a data quality issue end-to-end through lineage: upstream root causes to downstream impact. Requires internal issue_id (from search_issues, not the display name).
+
     Args:
-        issue_id: The ID of the issue to trace through lineage
+        issue_id: The internal ID of the issue to trace through lineage
         include_root_cause_analysis: Whether to perform upstream root cause analysis (default: True)
-        include_impact_analysis: Whether to perform downstream impact analysis (default: True) 
+        include_impact_analysis: Whether to perform downstream impact analysis (default: True)
         max_depth: Maximum depth for lineage traversal (default: 5)
-        
-    Returns:
-        Dictionary containing comprehensive lineage analysis
     """
     
     debug_print(f"Tracing lineage path for issue {issue_id}")
     
     try:
         # First get issues to find the specific one
-        issues_response = await get_issues(page_size=1000)
+        issues_response = await list_issues(page_size=1000)
         
         if "error" in issues_response:
             return issues_response
@@ -1703,7 +1567,7 @@ async def lineage_trace_issue_path(
         # Perform root cause analysis if requested
         if include_root_cause_analysis:
             debug_print("Performing root cause analysis")
-            root_cause_result = await analyze_upstream_root_causes(
+            root_cause_result = await get_upstream_root_causes(
                 node_id=lineage_node_id,
                 max_depth=max_depth
             )
@@ -1712,7 +1576,7 @@ async def lineage_trace_issue_path(
         # Perform impact analysis if requested  
         if include_impact_analysis:
             debug_print("Performing impact analysis")
-            impact_result = await analyze_downstream_impact(
+            impact_result = await get_downstream_impact(
                 node_id=lineage_node_id,
                 max_depth=max_depth,
                 include_integration_entities=True
@@ -1721,7 +1585,7 @@ async def lineage_trace_issue_path(
         
         # Get the complete bidirectional lineage graph
         debug_print("Getting complete lineage graph")
-        full_graph = await lineage_get_graph(
+        full_graph = await get_lineage_graph(
             node_id=lineage_node_id,
             direction="bidirectional",
             max_depth=max_depth,
@@ -1862,7 +1726,7 @@ def lineage_analysis_examples() -> str:
     # When you need to focus specifically on finding the source of issues
     node_id = 67890  # Table with data quality problems
     
-    root_cause_analysis = await analyze_upstream_root_causes(
+    root_cause_analysis = await get_upstream_root_causes(
         node_id=node_id,
         max_depth=10
     )
@@ -2106,51 +1970,19 @@ async def lineage_cleanup_agent_edges(
         }
 
 @mcp.tool()
-async def lineage_find_node(
+async def search_lineage_nodes(
     workspace_id: Optional[int] = None,
     search_string: str = "*",
     node_type: Optional[str] = None,
     limit: int = 20
 ) -> Dict[str, Any]:
-    """Find lineage nodes and get their IDs using Bigeye's advanced search.
-    
-    This tool uses Bigeye's path-based search to find nodes in the lineage graph.
-    It's particularly useful for getting node IDs that can be used with other lineage tools.
-    
-    Search format supports:
-    - Path-based search: "warehouse/schema/table/column"
-    - Partial names: Search for any part of the hierarchy
-    
+    """Find lineage node IDs by path pattern (e.g. 'WAREHOUSE/SCHEMA/TABLE'). Supports wildcards ('*/*/ORDERS'). Best for: getting a node_id required by get_lineage_graph, get_downstream_impact, and other lineage tools. Not for general table discovery — use search_tables for that.
+
     Args:
         workspace_id: Optional Bigeye workspace ID. If not provided, uses the configured workspace.
-        search_string: Search string using path format or partial names\
-        node_type: Optional node type filter:
-            - "DATA_NODE_TYPE_TABLE" - Tables only
-            - "DATA_NODE_TYPE_COLUMN" - Columns only
-            - "DATA_NODE_TYPE_CUSTOM" - Custom nodes (e.g., AI agents)
+        search_string: Search string using path format (e.g. 'WAREHOUSE/SCHEMA/TABLE') or wildcards
+        node_type: Optional node type filter: "DATA_NODE_TYPE_TABLE", "DATA_NODE_TYPE_COLUMN", "DATA_NODE_TYPE_CUSTOM"
         limit: Maximum number of results to return (default: 20)
-        
-    Returns:
-        Dictionary containing found nodes with their IDs and details
-        
-    Examples:
-        # Find a specific table (uses configured workspace)
-        await lineage_find_node(search_string="SNOWFLAKE/PROD_REPL/DIM_CUSTOMER")
-        
-        # Find all tables with "CUSTOMER" in the name
-        await lineage_find_node(search_string="*CUSTOMER*")
-        
-        # Find only table nodes with "CUSTOMER" 
-        await lineage_find_node(search_string="*CUSTOMER*", node_type="DATA_NODE_TYPE_TABLE")
-        
-        # Find a specific column
-        await lineage_find_node(search_string="SNOWFLAKE/PROD_REPL/DIM_CUSTOMER/CUSTOMER_ID")
-        
-        # Find all custom nodes (AI agents)
-        await lineage_find_node(search_string="*", node_type="DATA_NODE_TYPE_CUSTOM")
-        
-        # Find custom nodes with "Claude" in the name
-        await lineage_find_node(search_string="Claude", node_type="DATA_NODE_TYPE_CUSTOM")
     """
     # Use configured workspace_id if not provided
     if workspace_id is None:
@@ -2162,7 +1994,7 @@ async def lineage_find_node(
             }
     
     # Enhanced debug logging
-    debug_print(f"=== lineage_find_node called ===")
+    debug_print(f"=== search_lineage_nodes called ===")
     debug_print(f"  workspace_id: {workspace_id} (type: {type(workspace_id)})")
     debug_print(f"  search_string: '{search_string}'")
     debug_print(f"  node_type: {node_type}")
@@ -2459,23 +2291,11 @@ async def search_schemas(
     schema_name: Optional[str] = None,
     warehouse_names: Optional[List[str]] = None
 ) -> Dict[str, Any]:
-    """Search for schemas in Bigeye.
-    
-    This tool searches for database schemas by name and/or warehouse.
-    
+    """Search for schemas by name (supports partial matching). Returns matching schemas with table counts. Optionally filter by warehouse.
+
     Args:
         schema_name: Optional schema name to search for (supports partial matching)
         warehouse_names: Optional list of warehouse names to filter by
-        
-    Returns:
-        Dictionary containing matching schemas
-        
-    Example:
-        # Search for all schemas containing "prod"
-        results = await search_schemas(schema_name="prod")
-        
-        # Search for schemas in specific warehouse
-        results = await search_schemas(warehouse_names=["SNOWFLAKE"])
     """
     client = get_api_client()
     workspace_id = config.get('workspace_id')
@@ -2526,39 +2346,13 @@ async def search_tables(
     warehouse_names: Optional[List[str]] = None,
     include_columns: bool = False
 ) -> Dict[str, Any]:
-    """Search for tables in Bigeye.
-    
-    ALWAYS USE THIS TOOL FIRST when a user asks about a table by name!
-    This tool searches for database tables and helps identify the exact table
-    the user is referring to. Present the results to the user and ask them to
-    confirm which table they meant before using any other table-related tools.
-    
-    IMPORTANT: Always refer to tables by their FULL QUALIFIED NAME when discussing
-    them with the user (e.g., "ORACLE.PROD_SCHEMA.ORDERS" not just "ORDERS").
-    This avoids confusion about which database system the table belongs to.
+    """Search the Bigeye catalog for tables by exact or partial name match. Best for: finding a specific table when you know its name. Returns full qualified names, row counts, column counts. For natural language/conceptual queries, use search_metadata (knowledgebase) instead.
 
-    IMPORTANT: Schema names can have periods in them. If the user asks for a table
-    `BIGEYE_INTERNAL.PUBLIC.FACT_METRIC_RUN`, the table name is `FACT_METRIC_RUN`
-    and the schema is `BIGEYE_INTERNAL.PUBLIC`.
-    
     Args:
         table_name: Optional table name to search for (supports partial matching)
         schema_names: Optional list of schema names to filter by
         warehouse_names: Optional list of warehouse names to filter by
         include_columns: Whether to include column information in the response
-        
-    Returns:
-        Dictionary containing matching tables
-        
-    Example:
-        # Search for tables with "orders" in the name
-        results = await search_tables(table_name="orders")
-        
-        # Search for tables in specific schemas
-        results = await search_tables(schema_names=["prod_repl", "staging"])
-        
-        # Get tables with column details
-        results = await search_tables(table_name="customers", include_columns=True)
     """
     client = get_api_client()
     workspace_id = config.get('workspace_id')
@@ -2635,24 +2429,13 @@ async def search_tables(
         }
 
 @mcp.tool()
-async def get_upstream_issues_for_report(
+async def list_report_upstream_issues(
     report_id: int
 ) -> Dict[str, Any]:
-    """Get upstream data quality issues for a BI report (like a Tableau workbook).
-
-    This tool retrieves all data quality issues in tables that feed into a specific
-    BI report or dashboard, helping identify why reports might have data quality problems.
+    """List upstream data quality issues affecting a BI report or dashboard. Requires the report's lineage node_id.
 
     Args:
-        report_id: The ID of the BI report/dashboard node in the lineage graph
-
-    Returns:
-        Dictionary containing upstream issues affecting the report
-
-    Example:
-        # Get upstream issues for a Tableau workbook
-        issues = await get_upstream_issues_for_report(report_id=12345)
-        print(f"Found {len(issues.get('issues', []))} upstream issues")
+        report_id: The lineage node ID of the BI report/dashboard
     """
 
     client = get_api_client()
@@ -2715,27 +2498,13 @@ async def get_upstream_issues_for_report(
         }
 
 @mcp.tool()
-async def get_profile_for_table(
+async def get_table_profile(
     table_id: int
 ) -> Dict[str, Any]:
-    """Get profile report for a table.
-
-    This tool retrieves the data profiling report for a specific table in Bigeye,
-    providing insights into data quality characteristics such as:
-    - Column-level statistics (nulls, uniqueness, data types)
-    - Data distribution patterns
-    - Profile execution history
+    """Get the data profile report for a table including column statistics, data distribution, and profile history. Requires table_id.
 
     Args:
         table_id: The ID of the table to get the profile for
-
-    Returns:
-        Dictionary containing the table's profile report
-
-    Example:
-        # Get profile for table with ID 12345
-        profile = await get_profile_for_table(table_id=12345)
-        rows = profile.get("successfulProfile").get("fullRowCount")
     """
 
     client = get_api_client()
@@ -2751,25 +2520,13 @@ async def get_profile_for_table(
         }
 
 @mcp.tool()
-async def queue_table_profile(
+async def create_profile_job(
     table_id: int
 ) -> Dict[str, Any]:
-    """Queue a profiling job for a table.
-
-    This tool initiates a data profiling workflow for a specific table in Bigeye.
-    The profiling process analyzes the table's data to generate column statistics,
-    suggested data quality metrics, and other profile information.
+    """Queue a new data profiling job for a table. Returns a workflow ID to track progress with get_profile_job_status. Requires table_id.
 
     Args:
         table_id: The ID of the table to queue profiling for
-
-    Returns:
-        Dictionary containing the workflow ID of the queued profiling job
-
-    Example:
-        # Queue profiling for table with ID 12345
-        result = await queue_table_profile(table_id=12345)
-        workflow_id = result.get("workflowV2Id").get("workflowId")
     """
     client = get_api_client()
     debug_print(f"Queuing profile job for table {table_id}")
@@ -2783,27 +2540,13 @@ async def queue_table_profile(
         }
 
 @mcp.tool()
-async def get_profile_workflow_status_for_table(
+async def get_profile_job_status(
     table_id: int
 ) -> Dict[str, Any]:
-    """Get the status of profiling workflow for a table.
-
-    This tool checks the current status of data profiling workflows for a specific table.
-    Use this to monitor the progress of profiling jobs that were previously queued.
+    """Check the status of a profiling job (queued, running, completed). Requires table_id.
 
     Args:
         table_id: The ID of the table to check profiling workflow status for
-
-    Returns:
-        Dictionary containing the workflow status information including:
-        - Workflow ID and current status
-        - Progress information if available
-        - Completion time if finished
-
-    Example:
-        # Check profiling status for table with ID 12345
-        status = await get_profile_workflow_status_for_table(table_id=12345)
-        print(f"Workflow status: {status.get('status')}")
     """
     client = get_api_client()
     debug_print(f"Getting profile workflow status for table {table_id}")
@@ -2823,35 +2566,13 @@ async def search_columns(
     schema_names: Optional[List[str]] = None,
     warehouse_names: Optional[List[str]] = None
 ) -> Dict[str, Any]:
-    """Search for columns in Bigeye.
-    
-    ALWAYS USE THIS TOOL FIRST when a user asks about a column by name!
-    This tool searches for database columns and helps identify the exact column
-    the user is referring to. Present the results to the user and ask them to
-    confirm which column they meant before using any other column-related tools.
-    
-    IMPORTANT: Always refer to columns by their FULL QUALIFIED NAME when discussing
-    them with the user (e.g., "ORACLE.PROD_SCHEMA.ORDERS.CUSTOMER_ID" not just "CUSTOMER_ID").
-    This clearly shows which database system and table the column belongs to.
-    
+    """Search for columns by name (supports partial matching). Returns matching columns with full qualified names. Optionally filter by table, schema, or warehouse.
+
     Args:
         column_name: Optional column name to search for (supports partial matching)
         table_names: Optional list of table names to filter by
         schema_names: Optional list of schema names to filter by
         warehouse_names: Optional list of warehouse names to filter by
-        
-    Returns:
-        Dictionary containing matching columns
-        
-    Example:
-        # Search for columns with "customer_id" in the name
-        results = await search_columns(column_name="customer_id")
-        
-        # Search for columns in specific tables
-        results = await search_columns(table_names=["orders", "customers"])
-        
-        # Search for all columns in a schema
-        results = await search_columns(schema_names=["prod_repl"])
     """
     client = get_api_client()
     workspace_id = config.get('workspace_id')
