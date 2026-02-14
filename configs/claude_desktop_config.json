@@ -1,68 +1,21 @@
 {
   "mcpServers": {
     "bigeye": {
-      "command": "docker",
-      "args": [
-        "run",
-        "--rm",
-        "-i",
-        "-v", "${HOME}/.bigeye-mcp:/home/mcp/.bigeye-mcp",
-        "--env", "BIGEYE_DEBUG=${BIGEYE_DEBUG:-false}",
-        "bigeye-mcp-server:latest",
-        "python",
-        "server.py"
-      ],
-      "env": {
-        "BIGEYE_DEBUG": "false"
-      }
+      "_comment": "Recommended: wrapper script manages a long-lived container",
+      "command": "/absolute/path/to/mcp-wrapper.sh"
     },
-    "bigeye-docker-legacy": {
+    "bigeye-ephemeral": {
+      "_comment": "Alternative: ephemeral container per session",
       "command": "docker",
       "args": [
         "run",
         "--rm",
         "-i",
-        "-v", "${HOME}/.bigeye-mcp:/home/mcp/.bigeye-mcp",
-        "--env", "BIGEYE_API_KEY=${BIGEYE_API_KEY}",
-        "--env", "BIGEYE_BASE_URL=${BIGEYE_BASE_URL:-https://app.bigeye.com}",
-        "--env", "BIGEYE_WORKSPACE_ID=${BIGEYE_WORKSPACE_ID}",
-        "--env", "BIGEYE_DEBUG=${BIGEYE_DEBUG:-false}",
-        "bigeye-mcp-server:latest",
-        "python",
-        "server.py"
-      ],
-      "env": {
-        "BIGEYE_API_KEY": "your_api_key_here",
-        "BIGEYE_BASE_URL": "https://app.bigeye.com",
-        "BIGEYE_WORKSPACE_ID": "your_workspace_id_here",
-        "BIGEYE_DEBUG": "false"
-      }
-    },
-    "bigeye-docker-envfile": {
-      "command": "docker",
-      "args": [
-        "run",
-        "--rm",
-        "-i",
-        "--env-file", "/path/to/your/.env",
-        "bigeye-mcp-server:latest",
-        "python",
-        "server.py"
-      ]
-    },
-    "bigeye-docker-registry": {
-      "command": "docker",
-      "args": [
-        "run",
-        "--rm",
-        "-i",
-        "--env", "BIGEYE_API_KEY=${BIGEYE_API_KEY}",
-        "--env", "BIGEYE_API_URL=${BIGEYE_API_URL:-https://app.bigeye.com}",
-        "--env", "BIGEYE_WORKSPACE_ID=${BIGEYE_WORKSPACE_ID}",
-        "--env", "BIGEYE_DEBUG=${BIGEYE_DEBUG:-false}",
-        "ghcr.io/yourorg/bigeye-mcp-server:latest",
-        "python",
-        "server.py"
+        "-e", "BIGEYE_API_KEY=your_api_key_here",
+        "-e", "BIGEYE_BASE_URL=https://app.bigeye.com",
+        "-e", "BIGEYE_WORKSPACE_ID=your_workspace_id_here",
+        "-e", "BIGEYE_DEBUG=false",
+        "bigeye-mcp-server:latest"
       ]
     }
   }

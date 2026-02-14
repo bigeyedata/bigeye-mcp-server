@@ -18,11 +18,11 @@ IMAGE_TAG="latest"
 echo -e "${GREEN}Building Bigeye MCP Server Docker image...${NC}"
 echo "Image: ${IMAGE_NAME}:${IMAGE_TAG}"
 
-# Build the Docker image
-docker build -t "${IMAGE_NAME}:${IMAGE_TAG}" .
+# Build the Docker image with both tags
+docker build -t "${IMAGE_NAME}:${IMAGE_TAG}" -t "bigeye-mcp-ephemeral:latest" .
 
 if [ $? -eq 0 ]; then
-    echo -e "${GREEN}✅ Docker image built successfully!${NC}"
+    echo -e "${GREEN}Docker image built successfully!${NC}"
     echo ""
     echo -e "${YELLOW}To use this image with Claude Desktop, add the following to your config:${NC}"
     echo -e "${YELLOW}Location: ~/Library/Application Support/Claude/claude_desktop_config.json${NC}"
@@ -31,28 +31,14 @@ if [ $? -eq 0 ]; then
 {
   "mcpServers": {
     "bigeye": {
-      "command": "docker",
-      "args": [
-        "run",
-        "-i",
-        "--rm",
-        "-e",
-        "BIGEYE_API_KEY=<your-api-key>",
-        "-e",
-        "BIGEYE_API_URL=<your-bigeye-url>",
-        "-e",
-        "BIGEYE_WORKSPACE_ID=<your-workspace-id>",
-        "-e",
-        "BIGEYE_DEBUG=false",
-        "${IMAGE_NAME}:${IMAGE_TAG}"
-      ]
+      "command": "/absolute/path/to/mcp-wrapper.sh"
     }
   }
 }
 EOF
     echo ""
-    echo -e "${GREEN}Remember to replace the placeholder values with your actual Bigeye credentials!${NC}"
+    echo -e "${GREEN}Or start the long-lived container: ./bigeye-mcp.sh start${NC}"
 else
-    echo -e "${RED}❌ Docker build failed!${NC}"
+    echo -e "${RED}Docker build failed!${NC}"
     exit 1
 fi
