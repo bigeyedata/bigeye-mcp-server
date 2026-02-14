@@ -191,6 +191,14 @@ To connect to multiple Bigeye instances (e.g. demo and production), create separ
 - **`lineage_clear_tracked_assets`** — Clear all tracked data assets without committing
 - **`lineage_cleanup_agent_edges`** — Clean up old lineage edges for the AI agent
 
+### Data Dimensions
+
+- **`list_dimensions`** — List all Data Dimensions configured in the workspace
+- **`get_dimension`** — Get full details for a single dimension by ID
+- **`create_dimension`** — Create a new Data Dimension
+- **`update_dimension`** — Update a dimension's name or description
+- **`delete_dimension`** — Delete a Data Dimension
+
 ### System
 
 - **`get_health_status`** — Check the health and connectivity of the Bigeye API

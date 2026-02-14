@@ -2637,6 +2637,168 @@ async def search_columns(
             "message": f"Error searching columns: {str(e)}"
         }
 
+@mcp.tool()
+async def list_dimensions() -> Dict[str, Any]:
+    """List all Data Dimensions configured in the Bigeye workspace. Returns each dimension's ID, name, description, and metadata."""
+    client = get_api_client()
+
+    debug_print("Fetching all dimensions")
+
+    try:
+        result = await client.make_request("/api/v1/dimensions")
+
+        dimensions = result.get("dimensions", [])
+
+        formatted = []
+        for dim in dimensions:
+            formatted.append({
+                "id": dim.get("id"),
+                "name": dim.get("name"),
+                "description": dim.get("description"),
+                "created_by": dim.get("entityInfo", {}).get("createdBy"),
+                "updated_by": dim.get("entityInfo", {}).get("updatedBy"),
+            })
+
+        return {
+            "total_dimensions": len(formatted),
+            "dimensions": formatted,
+        }
+    except Exception as e:
+        return {
+            "error": True,
+            "message": f"Error fetching dimensions: {str(e)}",
+        }
+
+
+@mcp.tool()
+async def get_dimension(
+    dimension_id: int,
+) -> Dict[str, Any]:
+    """Get full details for a single Data Dimension by its ID. Returns the dimension's name, description, and entity metadata.
+
+    Args:
+        dimension_id: The ID of the dimension to retrieve
+    """
+    client = get_api_client()
+
+    debug_print(f"Fetching dimension {dimension_id}")
+
+    try:
+        result = await client.make_request(f"/api/v1/dimension/{dimension_id}")
+        return result
+    except Exception as e:
+        return {
+            "error": True,
+            "message": f"Error fetching dimension {dimension_id}: {str(e)}",
+        }
+
+
+@mcp.tool()
+async def create_dimension(
+    name: str,
+    description: Optional[str] = None,
+) -> Dict[str, Any]:
+    """Create a new Data Dimension in the Bigeye workspace.
+
+    Args:
+        name: The name for the new dimension
+        description: Optional description for the dimension
+    """
+    client = get_api_client()
+
+    debug_print(f"Creating dimension: name={name}")
+
+    body: Dict[str, Any] = {"name": name}
+    if description is not None:
+        body["description"] = description
+
+    try:
+        result = await client.make_request(
+            "/api/v1/dimensions",
+            method="POST",
+            json_data=body,
+        )
+        return result
+    except Exception as e:
+        return {
+            "error": True,
+            "message": f"Error creating dimension: {str(e)}",
+        }
+
+
+@mcp.tool()
+async def update_dimension(
+    dimension_id: int,
+    name: Optional[str] = None,
+    description: Optional[str] = None,
+) -> Dict[str, Any]:
+    """Update an existing Data Dimension's name or description.
+
+    Args:
+        dimension_id: The ID of the dimension to update
+        name: New name for the dimension (optional)
+        description: New description for the dimension (optional)
+    """
+    client = get_api_client()
+
+    debug_print(f"Updating dimension {dimension_id}")
+
+    body: Dict[str, Any] = {}
+    if name is not None:
+        body["name"] = name
+    if description is not None:
+        body["description"] = description
+
+    if not body:
+        return {
+            "error": True,
+            "message": "No fields to update. Provide at least one of: name, description",
+        }
+
+    try:
+        result = await client.make_request(
+            f"/api/v1/dimensions/{dimension_id}",
+            method="PUT",
+            json_data=body,
+        )
+        return result
+    except Exception as e:
+        return {
+            "error": True,
+            "message": f"Error updating dimension {dimension_id}: {str(e)}",
+        }
+
+
+@mcp.tool()
+async def delete_dimension(
+    dimension_id: int,
+) -> Dict[str, Any]:
+    """Delete a Data Dimension by its ID. This action is permanent.
+
+    Args:
+        dimension_id: The ID of the dimension to delete
+    """
+    client = get_api_client()
+
+    debug_print(f"Deleting dimension {dimension_id}")
+
+    try:
+        result = await client.make_request(
+            f"/api/v1/dimensions/{dimension_id}",
+            method="DELETE",
+        )
+        return {
+            "success": True,
+            "message": f"Dimension {dimension_id} deleted",
+            "response": result,
+        }
+    except Exception as e:
+        return {
+            "error": True,
+            "message": f"Error deleting dimension {dimension_id}: {str(e)}",
+        }
+
+
 # Run the server if executed directly
 if __name__ == "__main__":
     mcp.run()
