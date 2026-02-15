@@ -8,6 +8,7 @@ environment variables from Claude Desktop configuration.
 
 from mcp.server.fastmcp import FastMCP, Context
 import os
+import re
 import sys
 import json
 from typing import Optional, Dict, Any, List
@@ -19,6 +20,179 @@ from auth import BigeyeAuthClient
 from bigeye_api import BigeyeAPIClient
 from config import config
 from lineage_tracker import AgentLineageTracker
+
+# ---------------------------------------------------------------------------
+# Metric type → column type applicability
+# ---------------------------------------------------------------------------
+# The API tells us which metric types belong to each dimension, but NOT which
+# column data types they apply to.  This mapping encodes that heuristic.
+# Key = metric type name (exact or prefix ending with *).
+# Value = set of applicable type families; empty set = all types.
+
+METRIC_TYPE_FAMILIES: Dict[str, set] = {
+    # Pipeline Reliability — table-level
+    "COUNT_ROWS": set(),
+    "FRESHNESS": {"TIMESTAMP"},
+    "FRESHNESS_DATA": {"TIMESTAMP"},
+    "VOLUME": set(),
+    "VOLUME_DATA": set(),
+    "HOURS_SINCE_MAX_TIMESTAMP": {"TIMESTAMP"},
+    "HOURS_SINCE_LAST_LOAD": set(),
+    "ROWS_INSERTED": set(),
+    "COUNT_READ_QUERIES": set(),
+    # Completeness
+    "COUNT_NULL": set(),
+    "PERCENT_NULL": set(),
+    "COUNT_NOT_NULL": set(),
+    "PERCENT_NOT_NULL": set(),
+    "COUNT_EMPTY_STRING": {"STRING"},
+    "PERCENT_EMPTY_STRING": {"STRING"},
+    "COUNT_NULL_AND_EMPTY": {"STRING"},
+    "PERCENT_NULL_AND_EMPTY": {"STRING"},
+    # Uniqueness
+    "COUNT_DISTINCT": set(),
+    "COUNT_DUPLICATES": set(),
+    "PERCENT_DISTINCT": set(),
+    "PERCENT_DUPLICATES": set(),
+    # Distributions (numeric)
+    "AVERAGE": {"NUMBER"},
+    "MIN": {"NUMBER"},
+    "MAX": {"NUMBER"},
+    "SUM": {"NUMBER"},
+    "MEDIAN": {"NUMBER"},
+    "VARIANCE": {"NUMBER"},
+    "SKEW": {"NUMBER"},
+    "KURTOSIS": {"NUMBER"},
+    "GEOMETRIC_MEAN": {"NUMBER"},
+    "HARMONIC_MEAN": {"NUMBER"},
+    "COUNT_ZERO": {"NUMBER"},
+    "PERCENT_ZERO": {"NUMBER"},
+    "COUNT_NEGATIVE": {"NUMBER"},
+    "PERCENT_NEGATIVE": {"NUMBER"},
+    "PERCENTILE_20": {"NUMBER"},
+    "PERCENTILE_40": {"NUMBER"},
+    "PERCENTILE_60": {"NUMBER"},
+    "PERCENTILE_80": {"NUMBER"},
+    "PERCENTILE_90": {"NUMBER"},
+    # Validity — string metrics
+    "COUNT_UUID": {"STRING"},
+    "PERCENT_UUID": {"STRING"},
+    "COUNT_EMAIL": {"STRING"},
+    "PERCENT_EMAIL": {"STRING"},
+    "PERCENT_VALUE_IN_LIST": set(),
+    "COUNT_IN_LIST": set(),
+    "COUNT_NOT_IN_LIST": set(),
+    "PERCENT_NOT_IN_LIST": set(),
+    "COUNT_MATCHING_REGEX": {"STRING"},
+    "PERCENT_MATCHING_REGEX": {"STRING"},
+    "COUNT_NOT_MATCHING_REGEX": {"STRING"},
+    "PERCENT_NOT_MATCHING_REGEX": {"STRING"},
+    # Validity — string length (prefix pattern)
+    "STRING_LENGTH_*": {"STRING"},
+    # Validity — timestamps
+    "COUNT_INVALID_DATE": {"TIMESTAMP", "STRING"},
+    "PERCENT_INVALID_DATE": {"TIMESTAMP", "STRING"},
+    "COUNT_DATE_NOT_IN_FUTURE": {"TIMESTAMP"},
+    "PERCENT_DATE_NOT_IN_FUTURE": {"TIMESTAMP"},
+    # Custom
+    "CUSTOM_SQL": set(),
+}
+
+# Pre-compute prefix patterns for _metric_applies_to_type
+_PREFIX_PATTERNS = {k[:-1]: v for k, v in METRIC_TYPE_FAMILIES.items() if k.endswith("*")}
+
+
+def _metric_applies_to_type(metric_type: str, type_family: str) -> bool:
+    """Return True if *metric_type* is applicable to a column of *type_family*.
+
+    Checks exact match first, then prefix patterns (e.g. STRING_LENGTH_*).
+    If the metric type is unknown we conservatively return True.
+    """
+    families = METRIC_TYPE_FAMILIES.get(metric_type)
+    if families is not None:
+        return len(families) == 0 or type_family in families
+    # Check prefix patterns
+    for prefix, fam in _PREFIX_PATTERNS.items():
+        if metric_type.startswith(prefix):
+            return len(fam) == 0 or type_family in fam
+    # Unknown metric — assume applicable
+    return True
+
+
+def _normalize_data_type(raw_type: str) -> str:
+    """Map a raw warehouse column type to a family: TIMESTAMP, NUMBER, STRING, BOOLEAN."""
+    upper = raw_type.upper().split("(")[0].strip()
+    if upper in (
+        "TIMESTAMP", "TIMESTAMP_NTZ", "TIMESTAMP_LTZ", "TIMESTAMP_TZ",
+        "DATE", "DATETIME", "TIME",
+    ):
+        return "TIMESTAMP"
+    if upper in (
+        "NUMBER", "NUMERIC", "DECIMAL", "INT", "INTEGER", "BIGINT",
+        "SMALLINT", "TINYINT", "FLOAT", "DOUBLE", "REAL",
+    ):
+        return "NUMBER"
+    if upper in ("BOOLEAN", "BOOL"):
+        return "BOOLEAN"
+    # Default: STRING (VARCHAR, CHAR, TEXT, VARIANT, etc.)
+    return "STRING"
+
+
+def _infer_column_role(
+    column_name: str,
+    data_type_family: str,
+    is_primary_key: bool = False,
+    is_foreign_key: bool = False,
+) -> str:
+    """Infer a column's semantic role from its name, type, and key flags."""
+    name = column_name.upper()
+
+    if is_primary_key:
+        return "primary_key"
+    if is_foreign_key:
+        return "foreign_key"
+
+    # Identifier patterns
+    if name.endswith("_ID") or name == "ID":
+        return "identifier"
+
+    # Timestamp patterns
+    if data_type_family == "TIMESTAMP":
+        return "timestamp"
+
+    # Boolean
+    if data_type_family == "BOOLEAN" or name.startswith("IS_") or name.startswith("HAS_"):
+        return "boolean"
+
+    # Measure patterns (numeric columns that aren't IDs)
+    if data_type_family == "NUMBER":
+        measure_patterns = (
+            "AMOUNT", "TOTAL", "PRICE", "COST", "REVENUE", "SUM",
+            "COUNT", "QTY", "QUANTITY", "BALANCE", "RATE", "SCORE",
+        )
+        if any(pat in name for pat in measure_patterns):
+            return "measure"
+        return "measure"  # default for remaining numerics
+
+    # Categorical string patterns
+    if data_type_family == "STRING":
+        categorical_patterns = (
+            "STATUS", "TYPE", "CATEGORY", "STATE", "LEVEL", "TIER",
+            "CODE", "FLAG", "MODE", "PRIORITY", "ROLE",
+        )
+        if any(pat in name for pat in categorical_patterns):
+            return "categorical"
+        # Free text patterns
+        free_text_patterns = (
+            "DESCRIPTION", "COMMENT", "NOTE", "ADDRESS", "MESSAGE",
+            "BODY", "TEXT", "CONTENT", "MEMO", "SUMMARY",
+        )
+        if any(pat in name for pat in free_text_patterns):
+            return "free_text"
+        return "categorical"  # default for remaining strings
+
+    return "categorical"
+
 
 # Create an MCP server with system instructions
 mcp = FastMCP(
@@ -852,11 +1026,10 @@ async def get_table_quality_report(
             schema_name=schema_name or matching_table.get("schemaName")
         )
         
-        # Get metrics for the table
+        # Get metrics for the table (using table ID, not name)
         metrics_result = await client.get_table_metrics(
             workspace_id=workspace_id,
-            table_name=table_name,
-            schema_name=schema_name or matching_table.get("schemaName")
+            table_ids=[matching_table.get("id")],
         )
         
         # Compile the analysis
@@ -1075,10 +1248,23 @@ async def list_table_metrics(
     debug_print(f"Fetching metrics for table {table_name}")
 
     try:
-        result = await client.get_table_metrics(
+        # Resolve table name → table ID (GET /api/v1/metrics requires tableIds, not tableName)
+        table_result = await client.search_tables(
             workspace_id=workspace_id,
             table_name=table_name,
-            schema_name=schema_name
+            schema_names=[schema_name] if schema_name else None,
+        )
+        tables = table_result.get("tables", [])
+        if not tables:
+            return {"error": True, "message": f"Table '{table_name}' not found in Bigeye catalog"}
+
+        table_id = tables[0].get("id")
+        if not table_id:
+            return {"error": True, "message": f"Table '{table_name}' found but has no ID"}
+
+        result = await client.get_table_metrics(
+            workspace_id=workspace_id,
+            table_ids=[table_id],
         )
         return result
     except Exception as e:
@@ -2639,7 +2825,7 @@ async def search_columns(
 
 @mcp.tool()
 async def list_dimensions() -> Dict[str, Any]:
-    """List all Data Dimensions configured in the Bigeye workspace. Returns each dimension's ID, name, description, and metadata."""
+    """List all data-quality dimensions with their metric type mappings. Returns each dimension's name, top-level category (PIPELINE_RELIABILITY or DATA_QUALITY), and the metric types that belong to it. Use this to understand the dimension taxonomy before calling get_dimension_coverage."""
     client = get_api_client()
 
     debug_print("Fetching all dimensions")
@@ -2651,12 +2837,19 @@ async def list_dimensions() -> Dict[str, Any]:
 
         formatted = []
         for dim in dimensions:
+            # Extract metric type names from instanceTypesWithCounts
+            metric_types = [
+                entry.get("instanceType", "")
+                for entry in dim.get("instanceTypesWithCounts", [])
+                if entry.get("instanceType")
+            ]
+
             formatted.append({
                 "id": dim.get("id"),
                 "name": dim.get("name"),
                 "description": dim.get("description"),
-                "created_by": dim.get("entityInfo", {}).get("createdBy"),
-                "updated_by": dim.get("entityInfo", {}).get("updatedBy"),
+                "category": dim.get("topLevelCategory", ""),
+                "metric_types": metric_types,
             })
 
         return {
@@ -2796,6 +2989,263 @@ async def delete_dimension(
         return {
             "error": True,
             "message": f"Error deleting dimension {dimension_id}: {str(e)}",
+        }
+
+
+@mcp.tool()
+async def list_table_level_metrics() -> Dict[str, Any]:
+    """List metric types that are table-level (not column-level). Returns metric names like FRESHNESS, VOLUME, COUNT_ROWS, etc. Use this to distinguish table-level from column-level metrics when analyzing coverage."""
+    client = get_api_client()
+
+    debug_print("Fetching table-level metric names")
+
+    try:
+        result = await client.get_table_level_metric_names()
+        return result
+    except Exception as e:
+        return {
+            "error": True,
+            "message": f"Error fetching table-level metric names: {str(e)}",
+        }
+
+
+@mcp.tool()
+async def get_dimension_coverage(
+    table_name: str,
+    schema_name: Optional[str] = None,
+) -> Dict[str, Any]:
+    """Dimension-based monitoring coverage for a table. Fetches the real dimension taxonomy from the Bigeye API and checks each column's applicable dimensions against existing metrics. Returns per-column coverage, table-level coverage, an aggregate score, a prioritized gap list with suggested metric types, and a dimensions summary. Best for: understanding exactly which quality dimensions are missing on which columns.
+
+    Args:
+        table_name: Table name to analyze
+        schema_name: Optional schema name to narrow the search
+    """
+    client = get_api_client()
+    workspace_id = config.get("workspace_id")
+
+    if not workspace_id:
+        return {
+            "error": "Workspace ID not configured",
+            "hint": "Check your Claude Desktop configuration",
+        }
+
+    debug_print(f"Computing dimension coverage for table {table_name}")
+
+    try:
+        # 1. Fetch dimensions from API → build metric→dimension mapping
+        dims_result = await client.make_request("/api/v1/dimensions")
+        api_dimensions = dims_result.get("dimensions", [])
+
+        metric_to_dimension: Dict[str, str] = {}
+        dimension_info: Dict[str, Dict[str, Any]] = {}
+        for dim in api_dimensions:
+            dim_name = dim.get("name", "")
+            category = dim.get("topLevelCategory", "")
+            metric_types = [
+                entry.get("instanceType", "")
+                for entry in dim.get("instanceTypesWithCounts", [])
+                if entry.get("instanceType")
+            ]
+            dimension_info[dim_name] = {
+                "category": category,
+                "metric_types": metric_types,
+            }
+            for mt in metric_types:
+                metric_to_dimension[mt] = dim_name
+
+        # 2. Fetch table-level metric names
+        table_level_result = await client.get_table_level_metric_names()
+        table_level_names = set()
+        # Handle different response formats
+        if isinstance(table_level_result, dict):
+            for key in ("metricNames", "metric_names", "names"):
+                if key in table_level_result:
+                    table_level_names = set(table_level_result[key])
+                    break
+        elif isinstance(table_level_result, list):
+            table_level_names = set(table_level_result)
+
+        # 3. Fetch column metadata
+        table_result = await client.search_tables(
+            workspace_id=workspace_id,
+            table_name=table_name,
+            schema_names=[schema_name] if schema_name else None,
+            include_columns=True,
+        )
+        tables = table_result.get("tables", [])
+        if not tables:
+            return {"error": f"Table '{table_name}' not found"}
+
+        table = tables[0]
+        columns = table.get("columns", [])
+
+        # 4. Fetch existing metrics (using table ID, not name)
+        table_id = table.get("id")
+        if not table_id:
+            return {"error": f"Table '{table_name}' found but has no ID"}
+        metrics_result = await client.get_table_metrics(
+            workspace_id=workspace_id,
+            table_ids=[table_id],
+        )
+        metrics = metrics_result.get("metrics", [])
+
+        # Build per-column covered dimensions from existing metrics
+        column_covered_dimensions: Dict[str, set] = {}
+        table_covered_dimensions: set = set()
+        for m in metrics:
+            col = m.get("columnName", "")
+            metric_type = m.get("type", "")
+            dim = metric_to_dimension.get(metric_type)
+            if dim:
+                if metric_type in table_level_names:
+                    table_covered_dimensions.add(dim)
+                else:
+                    column_covered_dimensions.setdefault(col, set()).add(dim)
+
+        # 5. Determine which dimensions are table-level vs column-level
+        table_level_dimensions: List[str] = []
+        column_level_dimensions: List[str] = []
+        for dim_name, info in dimension_info.items():
+            has_non_table_metric = any(
+                mt not in table_level_names for mt in info["metric_types"]
+            )
+            has_table_metric = any(
+                mt in table_level_names for mt in info["metric_types"]
+            )
+            if has_table_metric:
+                table_level_dimensions.append(dim_name)
+            if has_non_table_metric:
+                column_level_dimensions.append(dim_name)
+
+        # 6. Compute per-column coverage
+        column_results = []
+        total_applicable = 0
+        total_covered = 0
+
+        for col in columns:
+            col_name = col.get("name", "")
+            raw_type = col.get("type", "STRING")
+            is_pk = col.get("isPrimaryKey", False)
+            is_fk = col.get("isForeignKey", False)
+
+            type_family = _normalize_data_type(raw_type)
+            role = _infer_column_role(col_name, type_family, is_pk, is_fk)
+
+            # A dimension is applicable if at least one of its non-table-level
+            # metrics passes _metric_applies_to_type for this column's type family
+            applicable = []
+            applicable_suggested: Dict[str, List[str]] = {}
+            for dim_name in column_level_dimensions:
+                info = dimension_info[dim_name]
+                matching_metrics = [
+                    mt for mt in info["metric_types"]
+                    if mt not in table_level_names
+                    and _metric_applies_to_type(mt, type_family)
+                ]
+                if matching_metrics:
+                    applicable.append(dim_name)
+                    # Pick first few as suggested metrics
+                    applicable_suggested[dim_name] = matching_metrics[:3]
+
+            covered = column_covered_dimensions.get(col_name, set())
+            covered_dims = [d for d in applicable if d in covered]
+            uncovered_dims = [d for d in applicable if d not in covered]
+
+            n_applicable = len(applicable)
+            n_covered = len(covered_dims)
+            total_applicable += n_applicable
+            total_covered += n_covered
+
+            col_score = n_covered / n_applicable if n_applicable > 0 else 1.0
+
+            column_results.append({
+                "column": col_name,
+                "data_type": raw_type,
+                "type_family": type_family,
+                "inferred_role": role,
+                "applicable_dimensions": applicable,
+                "covered_dimensions": covered_dims,
+                "uncovered_dimensions": uncovered_dims,
+                "coverage_score": round(col_score, 2),
+                "_suggested": applicable_suggested,
+            })
+
+        # 7. Table-level dimension coverage
+        table_uncovered = [
+            d for d in table_level_dimensions if d not in table_covered_dimensions
+        ]
+        total_applicable += len(table_level_dimensions)
+        total_covered += len(table_covered_dimensions)
+
+        aggregate_score = (
+            total_covered / total_applicable if total_applicable > 0 else 1.0
+        )
+
+        # 8. Prioritized gap list
+        gaps = []
+        for dim in table_uncovered:
+            info = dimension_info.get(dim, {})
+            table_metrics = [
+                mt for mt in info.get("metric_types", []) if mt in table_level_names
+            ]
+            gaps.append({
+                "level": "table",
+                "dimension": dim,
+                "category": info.get("category", ""),
+                "suggested_metrics": table_metrics[:3],
+            })
+        for cr in column_results:
+            for dim in cr["uncovered_dimensions"]:
+                info = dimension_info.get(dim, {})
+                gaps.append({
+                    "level": "column",
+                    "column": cr["column"],
+                    "dimension": dim,
+                    "category": info.get("category", ""),
+                    "inferred_role": cr["inferred_role"],
+                    "suggested_metrics": cr["_suggested"].get(dim, []),
+                })
+
+        # Strip internal _suggested from column results
+        for cr in column_results:
+            cr.pop("_suggested", None)
+
+        full_name_parts = [
+            table.get("warehouseName", ""),
+            table.get("databaseName", ""),
+            table.get("schemaName", ""),
+            table.get("name", ""),
+        ]
+        full_name = ".".join(p for p in full_name_parts if p)
+
+        # Build dimensions summary for agent context
+        dimensions_summary = []
+        for dim_name, info in dimension_info.items():
+            dimensions_summary.append({
+                "name": dim_name,
+                "category": info["category"],
+                "metric_count": len(info["metric_types"]),
+            })
+
+        return {
+            "table": full_name,
+            "aggregate_coverage_score": round(aggregate_score, 2),
+            "total_applicable_dimensions": total_applicable,
+            "total_covered_dimensions": total_covered,
+            "dimensions": dimensions_summary,
+            "table_level": {
+                "applicable": table_level_dimensions,
+                "covered": list(table_covered_dimensions),
+                "uncovered": table_uncovered,
+            },
+            "columns": column_results,
+            "gaps": gaps,
+        }
+
+    except Exception as e:
+        return {
+            "error": True,
+            "message": f"Error computing dimension coverage: {str(e)}",
         }
 
 

@@ -1245,28 +1245,43 @@ class BigeyeAPIClient:
     async def get_table_metrics(
         self,
         workspace_id: int,
-        table_name: str,
-        schema_name: Optional[str] = None
+        table_ids: Optional[List[int]] = None,
+        schema_ids: Optional[List[int]] = None,
+        source_ids: Optional[List[int]] = None,
+        column_ids: Optional[List[int]] = None,
+        search: Optional[str] = None,
+        page_size: int = 100,
     ) -> Dict[str, Any]:
-        """Get metrics configured for a specific table.
-        
+        """Search metric configurations filtered by IDs.
+
         Args:
             workspace_id: The workspace ID
-            table_name: Table name
-            schema_name: Optional schema name
-            
+            table_ids: Optional list of table IDs to filter by
+            schema_ids: Optional list of schema IDs to filter by
+            source_ids: Optional list of source (warehouse) IDs to filter by
+            column_ids: Optional list of column IDs to filter by
+            search: Optional search string
+            page_size: Number of results per page (default 100)
+
         Returns:
-            Dictionary containing metrics for the table
+            Dictionary containing metrics matching the filters
         """
-        # Build the API path - this might need adjustment based on actual API
-        params = {
+        params: Dict[str, Any] = {
             "workspaceId": workspace_id,
-            "tableName": table_name
+            "pageSize": page_size,
         }
-        
-        if schema_name:
-            params["schemaName"] = schema_name
-            
+
+        if table_ids:
+            params["tableIds"] = table_ids
+        if schema_ids:
+            params["schemaIds"] = schema_ids
+        if source_ids:
+            params["sourceIds"] = source_ids
+        if column_ids:
+            params["columnIds"] = column_ids
+        if search:
+            params["search"] = search
+
         return await self.make_request(
             "/api/v1/metrics",
             method="GET",
@@ -1438,6 +1453,17 @@ class BigeyeAPIClient:
             params=params
         )
         
+    async def get_table_level_metric_names(self) -> Dict[str, Any]:
+        """Get the list of table-level metric names from the Bigeye API.
+
+        Returns:
+            Dictionary containing the table-level metric names
+        """
+        return await self.make_request(
+            "/api/v1/metrics/table-level-metric-names",
+            method="GET",
+        )
+
     async def search_lineage_v2(
         self,
         search_string: str,
