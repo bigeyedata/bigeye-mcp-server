@@ -1120,7 +1120,7 @@ async def list_table_metrics(
     table_name: str,
     schema_name: Optional[str] = None
 ) -> Dict[str, Any]:
-    """List all metrics (monitors) configured on a table from the live Bigeye API. Best for: getting current metric configurations.
+    """List all metrics (monitors) configured on a table from the live Bigeye API. Returns full metric configurations including schedules, thresholds, lookback windows, and which data dimension each metric belongs to. For a quick coverage gap analysis, use get_table_dimension_coverage instead.
 
     Args:
         table_name: Table name to get metrics for
@@ -1156,6 +1156,40 @@ async def list_table_metrics(
             workspace_id=workspace_id,
             table_ids=[table_id],
         )
+
+        # Enrich metrics with dimension details from taxonomy
+        try:
+            dims_result = await client.make_request("/api/v1/dimensions")
+            if isinstance(dims_result, list):
+                dims_result = {"dimensions": dims_result}
+            # Build lookup by dimension ID
+            dim_by_id = {}
+            for dim in dims_result.get("dimensions", []):
+                dim_id = dim.get("id")
+                if dim_id is not None:
+                    dim_by_id[dim_id] = {
+                        "dimension_id": dim_id,
+                        "dimension_name": dim.get("name"),
+                        "dimension_category": dim.get("topLevelCategory", ""),
+                    }
+
+            metrics = result.get("metrics", [])
+            for m in metrics:
+                # The API returns dimension.id natively on each metric
+                native_dim = m.get("dimension") or {}
+                dim_id = native_dim.get("id")
+                if dim_id and dim_id in dim_by_id:
+                    m["dimension"] = dim_by_id[dim_id]
+
+            covered_dims = {m["dimension"]["dimension_name"] for m in metrics if isinstance(m.get("dimension"), dict) and m["dimension"].get("dimension_name")}
+            result["dimension_summary"] = {
+                "covered_dimensions": sorted(covered_dims),
+                "metric_count": len(metrics),
+            }
+        except Exception:
+            # Don't fail the whole response if dimension enrichment fails
+            pass
+
         return result
     except Exception as e:
         return {
@@ -2422,7 +2456,7 @@ async def search_tables(
     warehouse_names: Optional[List[str]] = None,
     include_columns: bool = False
 ) -> Dict[str, Any]:
-    """Search the Bigeye catalog for tables by exact or partial name match. Best for: finding a specific table when you know its name. Returns full qualified names, row counts, column counts. For natural language/conceptual queries, use search_metadata (knowledgebase) instead.
+    """Search the Bigeye catalog for tables by exact or partial name match. Best for: finding a specific table when you know its name. Returns full qualified names, row counts, column counts. For natural language/conceptual queries, use search_metadata (knowledgebase) instead. After resolving a table, use list_table_metrics for monitor details or get_table_dimension_coverage for coverage gap analysis.
 
     Args:
         table_name: Optional table name to search for (supports partial matching)
@@ -2715,23 +2749,27 @@ async def search_columns(
 
 @mcp.tool()
 async def list_dimensions() -> Dict[str, Any]:
-    """List all data-quality dimensions with their metric type mappings. Returns each dimension's name, top-level category (PIPELINE_RELIABILITY or DATA_QUALITY), and the metric types that belong to it. Use this to understand the dimension taxonomy before calling get_dimension_coverage."""
+    """List all data-quality dimensions with their metric type mappings. Returns each dimension's name, top-level category (PIPELINE_RELIABILITY or DATA_QUALITY), and the metric types that belong to it. For a table-specific coverage analysis that maps dimensions to existing monitors, use get_table_dimension_coverage."""
     client = get_api_client()
 
     debug_print("Fetching all dimensions")
 
     try:
         result = await client.make_request("/api/v1/dimensions")
+        if isinstance(result, list):
+            result = {"dimensions": result}
 
         dimensions = result.get("dimensions", [])
 
         formatted = []
         for dim in dimensions:
             # Extract metric type names from instanceTypesWithCounts
+            # The metric type name is in the "name" field, not "instanceType"
+            # (instanceType is always "DIMENSION_INSTANCE_TYPE_METRIC")
             metric_types = [
-                entry.get("instanceType", "")
+                entry.get("name", "")
                 for entry in dim.get("instanceTypesWithCounts", [])
-                if entry.get("instanceType")
+                if entry.get("name")
             ]
 
             formatted.append({
@@ -2899,16 +2937,19 @@ async def list_table_level_metrics() -> Dict[str, Any]:
         }
 
 
-@mcp.tool()
-async def get_dimension_coverage(
+async def _compute_dimension_coverage(
     table_name: str,
     schema_name: Optional[str] = None,
+    column_names: Optional[List[str]] = None,
+    table_id: Optional[int] = None,
 ) -> Dict[str, Any]:
-    """Dimension-based monitoring coverage for a table. Fetches the real dimension taxonomy from the Bigeye API and checks each column's applicable dimensions against existing metrics. Returns per-column coverage, table-level coverage, an aggregate score, a prioritized gap list with suggested metric types, and a dimensions summary. Best for: understanding exactly which quality dimensions are missing on which columns.
+    """Shared implementation for dimension coverage tools.
 
-    Args:
-        table_name: Table name to analyze
-        schema_name: Optional schema name to narrow the search
+    If column_names is provided, filters the per-column results to only those
+    columns (case-insensitive). Table-level coverage is always included.
+
+    If table_id is provided, fetches the table directly by ID (avoids
+    ambiguous name-based lookups). Otherwise falls back to name search.
     """
     client = get_api_client()
     workspace_id = config.get("workspace_id")
@@ -2919,7 +2960,7 @@ async def get_dimension_coverage(
             "hint": "Check your Claude Desktop configuration",
         }
 
-    debug_print(f"Computing dimension coverage for table {table_name}")
+    debug_print(f"Computing dimension coverage for table {table_name or table_id}")
 
     try:
         # 1. Fetch dimensions from API → build metric→dimension mapping
@@ -2933,10 +2974,12 @@ async def get_dimension_coverage(
         for dim in api_dimensions:
             dim_name = dim.get("name", "")
             category = dim.get("topLevelCategory", "")
+            # The metric type name is in the "name" field of each entry,
+            # not "instanceType" (which is always "DIMENSION_INSTANCE_TYPE_METRIC")
             metric_types = [
-                entry.get("instanceType", "")
+                entry.get("name", "")
                 for entry in dim.get("instanceTypesWithCounts", [])
-                if entry.get("instanceType")
+                if entry.get("name")
             ]
             dimension_info[dim_name] = {
                 "category": category,
@@ -2957,19 +3000,39 @@ async def get_dimension_coverage(
         elif isinstance(table_level_result, list):
             table_level_names = set(table_level_result)
 
-        # 3. Fetch column metadata
-        table_result = await client.search_tables(
-            workspace_id=workspace_id,
-            table_name=table_name,
-            schema_names=[schema_name] if schema_name else None,
-            include_columns=True,
-        )
+        # 3. Fetch column metadata — by ID if available, otherwise name search
+        if table_id:
+            table_result = await client.fetch_tables(
+                workspace_id=workspace_id,
+                table_ids=[table_id],
+                include_columns=True,
+            )
+        else:
+            table_result = await client.search_tables(
+                workspace_id=workspace_id,
+                table_name=table_name,
+                schema_names=[schema_name] if schema_name else None,
+                include_columns=True,
+            )
         tables = table_result.get("tables", []) if isinstance(table_result, dict) else []
         if not tables:
-            return {"error": f"Table '{table_name}' not found"}
+            identifier = f"ID {table_id}" if table_id else f"'{table_name}'"
+            return {"error": f"Table {identifier} not found"}
 
         table = tables[0]
         columns = table.get("columns", [])
+
+        # If column_names filter is provided, validate and filter
+        if column_names is not None:
+            filter_set = {c.lower() for c in column_names}
+            all_col_names = {col.get("name", "").lower() for col in columns}
+            missing = filter_set - all_col_names
+            if missing:
+                return {
+                    "error": f"Columns not found on table '{table_name}': {sorted(missing)}",
+                    "available_columns": sorted(col.get("name", "") for col in columns),
+                }
+            columns = [col for col in columns if col.get("name", "").lower() in filter_set]
 
         # 4. Fetch existing metrics (using table ID, not name)
         table_id = table.get("id")
@@ -2985,11 +3048,18 @@ async def get_dimension_coverage(
         column_covered_dimensions: Dict[str, set] = {}
         table_covered_dimensions: set = set()
         for m in metrics:
-            col = m.get("columnName", "")
-            metric_type = m.get("type", "")
+            # Extract column name from parameters list
+            params = m.get("parameters", [])
+            col = params[0].get("columnName", "") if params else ""
+            # Extract metric type from nested metricType structure
+            metric_type = (
+                m.get("metricType", {})
+                .get("predefinedMetric", {})
+                .get("metricName", "")
+            )
             dim = metric_to_dimension.get(metric_type)
             if dim:
-                if metric_type in table_level_names:
+                if metric_type in table_level_names or m.get("isTableMetric", False):
                     table_covered_dimensions.add(dim)
                 else:
                     column_covered_dimensions.setdefault(col, set()).add(dim)
@@ -3139,6 +3209,50 @@ async def get_dimension_coverage(
             "error": True,
             "message": f"Error computing dimension coverage: {str(e)}",
         }
+
+
+@mcp.tool()
+async def get_table_dimension_coverage(
+    table_name: str = "",
+    schema_name: Optional[str] = None,
+    table_id: Optional[int] = None,
+) -> Dict[str, Any]:
+    """Analyze which data quality dimensions are covered by monitors on a table and which have gaps. Automatically joins the workspace's dimension taxonomy, the table's column metadata, and existing metrics to produce: per-column coverage, table-level coverage, an aggregate score, and a prioritized gap list with suggested metric types. This is the recommended single-call tool for answering 'what monitoring is missing on this table?'
+
+    Prefer passing table_id (from search_tables) for reliable lookups. Falls back to name-based search if table_id is not provided.
+
+    Args:
+        table_name: Table name to analyze (used as fallback if table_id not provided)
+        schema_name: Optional schema name to narrow name-based search
+        table_id: Table ID from search_tables — preferred, avoids ambiguous name lookups
+    """
+    if not table_id and not table_name:
+        return {"error": "Either table_id or table_name is required"}
+    return await _compute_dimension_coverage(table_name, schema_name, table_id=table_id)
+
+
+@mcp.tool()
+async def get_column_dimension_coverage(
+    table_name: str = "",
+    column_names: List[str] = [],
+    schema_name: Optional[str] = None,
+    table_id: Optional[int] = None,
+) -> Dict[str, Any]:
+    """Analyze dimension coverage for specific columns in a table. Same analysis as get_table_dimension_coverage but filtered to the requested columns. Use this when you already know which columns to investigate — for example, after identifying columns with issues or when a user asks about specific fields. Always includes table-level dimension coverage for context.
+
+    Prefer passing table_id (from search_tables) for reliable lookups. Falls back to name-based search if table_id is not provided.
+
+    Args:
+        table_name: Table name to analyze (used as fallback if table_id not provided)
+        column_names: List of column names to analyze coverage for
+        schema_name: Optional schema name to narrow name-based search
+        table_id: Table ID from search_tables — preferred, avoids ambiguous name lookups
+    """
+    if not table_id and not table_name:
+        return {"error": "Either table_id or table_name is required"}
+    if not column_names:
+        return {"error": "column_names is required"}
+    return await _compute_dimension_coverage(table_name, schema_name, column_names, table_id=table_id)
 
 
 # Run the server if executed directly

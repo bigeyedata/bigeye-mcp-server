@@ -192,11 +192,13 @@ To connect to multiple Bigeye instances (e.g. demo and production), create separ
 
 ### Data Dimensions
 
-- **`list_dimensions`** — List all Data Dimensions configured in the workspace
+- **`list_dimensions`** — List all data-quality dimensions with their metric type mappings
 - **`get_dimension`** — Get full details for a single dimension by ID
 - **`create_dimension`** — Create a new Data Dimension
 - **`update_dimension`** — Update a dimension's name or description
 - **`delete_dimension`** — Delete a Data Dimension
+- **`get_table_dimension_coverage`** — Analyze dimension coverage gaps for a table (recommended for "what monitoring is missing?")
+- **`get_column_dimension_coverage`** — Analyze dimension coverage for specific columns in a table
 
 ### System
 

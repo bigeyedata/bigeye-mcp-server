@@ -1413,6 +1413,36 @@ class BigeyeAPIClient:
             params=params
         )
     
+    async def fetch_tables(
+        self,
+        workspace_id: int,
+        table_ids: List[int],
+        include_columns: bool = False
+    ) -> Dict[str, Any]:
+        """Fetch specific tables by ID.
+
+        Args:
+            workspace_id: Required workspace ID
+            table_ids: List of table IDs to fetch
+            include_columns: Whether to include column information
+
+        Returns:
+            Dictionary containing tables
+        """
+        payload: Dict[str, Any] = {
+            "workspaceId": workspace_id,
+            "tableIds": table_ids,
+        }
+
+        if not include_columns:
+            payload["ignoreFields"] = True
+
+        return await self.make_request(
+            "/api/v1/tables/fetch",
+            method="POST",
+            json_data=payload
+        )
+
     async def search_columns(
         self,
         workspace_id: int,
