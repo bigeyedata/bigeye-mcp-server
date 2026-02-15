@@ -1282,11 +1282,15 @@ class BigeyeAPIClient:
         if search:
             params["search"] = search
 
-        return await self.make_request(
+        result = await self.make_request(
             "/api/v1/metrics",
             method="GET",
             params=params
         )
+        # API may return a bare list instead of {"metrics": [...]}
+        if isinstance(result, list):
+            result = {"metrics": result}
+        return result
 
     async def get_sources(
         self,

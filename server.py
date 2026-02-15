@@ -254,6 +254,20 @@ mcp = FastMCP(
        "the ORACLE.PROD_SCHEMA.ORDERS table" to be clear about which database
        system it belongs to.
 
+    KNOWLEDGEBASE SERVER
+    ====================
+    If a bigeye-knowledgebase MCP server is also available, prefer its search tools for
+    discovering data assets:
+    - search_metadata: Semantic search across tables, columns, schemas, BI reports
+    - list_schemas, list_tables, list_sources: Browse the data catalog
+    - list_integrations, list_catalog_entities: Find BI dashboards and reports
+
+    Use THIS server for everything else: quality reports, monitoring, issues, lineage
+    analysis, actions, agent tracking, profiling, and dimension management.
+
+    If the knowledgebase tools are not available, fall back to this server's search tools
+    (search_tables, search_columns, search_schemas).
+
     IMPORTANT: Understanding Issue and Incident References
     =======================================================
     Issues and incidents have TWO different identifiers - understanding the distinction is CRITICAL:
@@ -937,130 +951,6 @@ async def list_table_issues(
         }
 
 @mcp.tool()
-async def get_table_quality_report(
-    table_name: str,
-    schema_name: Optional[str] = None,
-    warehouse_name: Optional[str] = None
-) -> Dict[str, Any]:
-    """Comprehensive quality report for a table: catalog metadata + configured metrics + active issues. WARNING: expensive multi-API-call operation. Use list_table_issues if you only need issues, or get_monitor_coverage (knowledgebase) for coverage gaps.
-
-    Args:
-        table_name: Name of the table to analyze (e.g., "ORDERS")
-        schema_name: Optional schema name (e.g., "PROD_REPL")
-        warehouse_name: Optional warehouse name (e.g., "SNOWFLAKE")
-    """
-    
-    client = get_api_client()
-    workspace_id = config.get('workspace_id')
-    
-    if not workspace_id:
-        return {
-            'error': 'Workspace ID not set',
-            'hint': 'Authentication may be incomplete. Try re-authenticating.'
-        }
-    
-    debug_print(f"Analyzing data quality for table {table_name}")
-    
-    try:
-        # First, check if table exists in catalog
-        catalog_result = await client.get_catalog_tables(
-            workspace_id=workspace_id,
-            schema_name=schema_name,
-            warehouse_name=warehouse_name,
-            page_size=100
-        )
-        
-        if catalog_result.get("error"):
-            return {
-                "error": True,
-                "message": "Failed to check catalog",
-                "details": catalog_result
-            }
-            
-        tables = catalog_result.get("tables", [])
-        matching_table = None
-        
-        for table in tables:
-            if table.get("tableName", "").upper() == table_name.upper():
-                matching_table = table
-                break
-                
-        if not matching_table:
-            # Table not found - provide helpful info
-            available_tables = [t.get("tableName") for t in tables]
-            return {
-                "error": True,
-                "message": f"Table {table_name} not found in Bigeye catalog",
-                "available_tables_in_schema": available_tables[:10],  # Show first 10
-                "hint": "Make sure the table name is correct and has been imported into Bigeye"
-            }
-            
-        # Get the table details with full qualified name
-        warehouse = matching_table.get("warehouseName", "")
-        schema = matching_table.get("schemaName", "")
-        table = matching_table.get("tableName", "")
-        
-        full_qualified_name = ""
-        if warehouse and schema and table:
-            full_qualified_name = f"{warehouse}.{schema}.{table}"
-        elif schema and table:
-            full_qualified_name = f"{schema}.{table}"
-        elif table:
-            full_qualified_name = table
-            
-        table_info = {
-            "full_qualified_name": full_qualified_name,
-            "USE_THIS_NAME": full_qualified_name,
-            "display_name": f"{full_qualified_name} (in {warehouse} database)" if warehouse else full_qualified_name,
-            "table_name": table,
-            "schema_name": schema,
-            "warehouse_name": warehouse,
-            "table_id": matching_table.get("id")
-        }
-        
-        # Get issues for the table
-        issues_result = await client.get_issues_for_table(
-            workspace_id=workspace_id,
-            table_name=table_name,
-            warehouse_name=warehouse_name,
-            schema_name=schema_name or matching_table.get("schemaName")
-        )
-        
-        # Get metrics for the table (using table ID, not name)
-        metrics_result = await client.get_table_metrics(
-            workspace_id=workspace_id,
-            table_ids=[matching_table.get("id")],
-        )
-        
-        # Compile the analysis
-        analysis = {
-            "table": table_info,
-            "data_quality_summary": {
-                "total_issues": issues_result.get("total_issues", 0),
-                "issues_by_status": {},
-                "has_metrics": not metrics_result.get("error")
-            },
-            "issues": issues_result.get("issues", []),
-            "metrics": metrics_result if not metrics_result.get("error") else None
-        }
-        
-        # Group issues by status
-        for issue in issues_result.get("issues", []):
-            status = issue.get("currentStatus", "UNKNOWN")
-            analysis["data_quality_summary"]["issues_by_status"][status] = \
-                analysis["data_quality_summary"]["issues_by_status"].get(status, 0) + 1
-                
-        debug_print(f"Analysis complete for {table_name}: {analysis['data_quality_summary']['total_issues']} issues found")
-        
-        return analysis
-        
-    except Exception as e:
-        return {
-            "error": True,
-            "message": f"Error analyzing table data quality: {str(e)}"
-        }
-
-@mcp.tool()
 async def create_incident(
     issue_ids: List[int],
     existing_incident_id: Optional[int] = None,
@@ -1230,7 +1120,7 @@ async def list_table_metrics(
     table_name: str,
     schema_name: Optional[str] = None
 ) -> Dict[str, Any]:
-    """List all metrics (monitors) configured on a table from the live Bigeye API. Best for: getting current metric configurations. For cached monitor data, use list_table_monitors (knowledgebase) instead.
+    """List all metrics (monitors) configured on a table from the live Bigeye API. Best for: getting current metric configurations.
 
     Args:
         table_name: Table name to get metrics for
@@ -1275,7 +1165,7 @@ async def list_table_metrics(
 
 @mcp.tool()
 async def list_data_sources() -> Dict[str, Any]:
-    """List all data sources (warehouses) connected to Bigeye. Returns source names, types (SNOWFLAKE, DATABRICKS, etc.), and connection details."""
+    """List all data sources (warehouses) connected to Bigeye. Returns source names, types (SNOWFLAKE, DATABRICKS, etc.), and connection details. Prefer list_sources (knowledgebase) for faster cached results."""
     client = get_api_client()
     workspace_id = config.get('workspace_id')
 
@@ -2296,8 +2186,8 @@ async def lineage_explore_catalog(
     search_term: Optional[str] = None,
     page_size: int = 50
 ) -> Dict[str, Any]:
-    """Explore tables in Bigeye's catalog.
-    
+    """Explore tables in Bigeye's catalog. For browsing the data catalog, prefer list_tables + list_schemas (knowledgebase).
+
     This diagnostic tool helps discover how tables are named and structured in Bigeye's catalog.
     
     Args:
@@ -2477,7 +2367,7 @@ async def search_schemas(
     schema_name: Optional[str] = None,
     warehouse_names: Optional[List[str]] = None
 ) -> Dict[str, Any]:
-    """Search for schemas by name (supports partial matching). Returns matching schemas with table counts. Optionally filter by warehouse.
+    """Search for schemas by name (supports partial matching). Returns matching schemas with table counts. Optionally filter by warehouse. For browsing schemas with table counts, prefer list_schemas (knowledgebase).
 
     Args:
         schema_name: Optional schema name to search for (supports partial matching)
@@ -2618,7 +2508,7 @@ async def search_tables(
 async def list_report_upstream_issues(
     report_id: int
 ) -> Dict[str, Any]:
-    """List upstream data quality issues affecting a BI report or dashboard. Requires the report's lineage node_id.
+    """List upstream data quality issues affecting a BI report or dashboard. Requires the report's lineage node_id. To discover reports/dashboards first, use list_catalog_entities (knowledgebase).
 
     Args:
         report_id: The lineage node ID of the BI report/dashboard
@@ -2752,7 +2642,7 @@ async def search_columns(
     schema_names: Optional[List[str]] = None,
     warehouse_names: Optional[List[str]] = None
 ) -> Dict[str, Any]:
-    """Search for columns by name (supports partial matching). Returns matching columns with full qualified names. Optionally filter by table, schema, or warehouse.
+    """Search for columns by name (supports partial matching). Returns matching columns with full qualified names. Optionally filter by table, schema, or warehouse. For semantic/conceptual column discovery, prefer search_metadata (knowledgebase).
 
     Args:
         column_name: Optional column name to search for (supports partial matching)
@@ -3034,6 +2924,8 @@ async def get_dimension_coverage(
     try:
         # 1. Fetch dimensions from API → build metric→dimension mapping
         dims_result = await client.make_request("/api/v1/dimensions")
+        if isinstance(dims_result, list):
+            dims_result = {"dimensions": dims_result}
         api_dimensions = dims_result.get("dimensions", [])
 
         metric_to_dimension: Dict[str, str] = {}
@@ -3072,7 +2964,7 @@ async def get_dimension_coverage(
             schema_names=[schema_name] if schema_name else None,
             include_columns=True,
         )
-        tables = table_result.get("tables", [])
+        tables = table_result.get("tables", []) if isinstance(table_result, dict) else []
         if not tables:
             return {"error": f"Table '{table_name}' not found"}
 
