@@ -1120,7 +1120,7 @@ async def list_table_metrics(
     table_name: str,
     schema_name: Optional[str] = None
 ) -> Dict[str, Any]:
-    """List all metrics (monitors) configured on a table from the live Bigeye API. Returns full metric configurations including schedules, thresholds, lookback windows, and which data dimension each metric belongs to. For a quick coverage gap analysis, use get_table_dimension_coverage instead.
+    """List metrics (monitors) configured on a table. Returns a compact summary of each metric: ID, name, type, column, and dimension. Use get_metric to fetch full configuration details (thresholds, schedules, lookback) for any metric. For coverage gap analysis, use get_table_dimension_coverage instead. If the current task involves column-level analysis, follow up with get_column_dimension_coverage to discover per-column monitoring gaps.
 
     Args:
         table_name: Table name to get metrics for
@@ -1182,20 +1182,66 @@ async def list_table_metrics(
                     m["dimension"] = dim_by_id[dim_id]
 
             covered_dims = {m["dimension"]["dimension_name"] for m in metrics if isinstance(m.get("dimension"), dict) and m["dimension"].get("dimension_name")}
-            result["dimension_summary"] = {
+            dimension_summary = {
                 "covered_dimensions": sorted(covered_dims),
                 "metric_count": len(metrics),
             }
         except Exception:
             # Don't fail the whole response if dimension enrichment fails
-            pass
+            dimension_summary = {}
 
-        return result
+        compact_metrics = []
+        for m in metrics:
+            params = m.get("parameters", [])
+            col = params[0].get("columnName", "") if params else ""
+            metric_type = (
+                m.get("metricType", {})
+                .get("predefinedMetric", {})
+                .get("metricName", "")
+            )
+            summary = {
+                "id": m.get("id"),
+                "name": m.get("name", ""),
+                "metric_type": metric_type,
+                "is_table_metric": m.get("isTableMetric", False),
+                "dimension": m.get("dimension"),
+            }
+            if col:
+                summary["column_name"] = col
+            compact_metrics.append(summary)
+
+        return {
+            "table": table_name,
+            "table_id": table_id,
+            "metric_count": len(compact_metrics),
+            "dimension_summary": dimension_summary,
+            "metrics": compact_metrics,
+            "tip": "Use get_metric(metric_id=...) for full configuration details "
+                   "(thresholds, schedules, lookback). Use get_column_dimension_coverage "
+                   "or get_table_dimension_coverage to analyze monitoring gaps.",
+        }
     except Exception as e:
         return {
             "error": True,
             "message": f"Error fetching table metrics: {str(e)}"
         }
+
+@mcp.tool()
+async def get_metric(
+    metric_id: int,
+) -> Dict[str, Any]:
+    """Get full configuration details for a metric (monitor) by its ID.
+    Returns thresholds, schedules, lookback windows, and all configuration
+    parameters. Use list_table_metrics first to find metric IDs for a table.
+
+    Args:
+        metric_id: The metric ID (from list_table_metrics results)
+    """
+    client = get_api_client()
+    try:
+        return await client.get_metric_info(metric_id)
+    except Exception as e:
+        return {"error": True, "message": f"Error fetching metric {metric_id}: {str(e)}"}
 
 @mcp.tool()
 async def list_data_sources() -> Dict[str, Any]:

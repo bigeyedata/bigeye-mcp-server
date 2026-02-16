@@ -1292,6 +1292,13 @@ class BigeyeAPIClient:
             result = {"metrics": result}
         return result
 
+    async def get_metric_info(self, metric_id: int) -> Dict[str, Any]:
+        """Fetch full metric info by ID.
+
+        Uses GET /api/v1/metrics/info/{metricId}
+        """
+        return await self.make_request(f"/api/v1/metrics/info/{metric_id}")
+
     async def get_sources(
         self,
         workspace_id: int

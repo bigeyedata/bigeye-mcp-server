@@ -155,7 +155,8 @@ To connect to multiple Bigeye instances (e.g. demo and production), create separ
 
 ### Metrics & Quality
 
-- **`list_table_metrics`** — List all metrics (monitors) configured on a table
+- **`list_table_metrics`** — List compact summaries of all metrics on a table (use get_metric for full details)
+- **`get_metric`** — Get full configuration details for a single metric by ID
 - **`get_table_profile`** — Get data profile report including column statistics and distribution
 - **`create_profile_job`** — Queue a new data profiling job for a table
 - **`get_profile_job_status`** — Check the status of a profiling job
