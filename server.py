@@ -3533,6 +3533,312 @@ async def get_column_dimension_coverage(
     return await _compute_dimension_coverage(table_name, schema_name, column_names, table_id=table_id)
 
 
+# ---------------------------------------------------------------------------
+# Tag Management Tools
+# ---------------------------------------------------------------------------
+
+_COLOR_HEX_RE = re.compile(r"^#([A-Fa-f0-9]{6}|[A-Fa-f0-9]{3})$")
+
+
+def _validate_entity_type(entity_type: str) -> tuple:
+    """Validate and normalize entity_type. Returns (normalized_value, error_dict_or_None)."""
+    upper = entity_type.upper()
+    if upper not in _TAGGABLE_ENTITY_TYPE_MAP:
+        return None, {
+            "error": f"Invalid entity_type: {entity_type}",
+            "valid_values": ["SOURCE", "SCHEMA", "TABLE", "METRIC", "COLUMN", "DELTA", "SLA", "CUSTOM_RULE"],
+            "hint": "Use short names (e.g. METRIC) or full enum values (e.g. TAGGABLE_ENTITY_TYPE_METRIC)",
+        }
+    return _TAGGABLE_ENTITY_TYPE_MAP[upper], None
+
+
+@mcp.tool()
+async def list_tags(
+    search: Optional[str] = None,
+    page_size: int = 50,
+    page_cursor: Optional[str] = None,
+) -> Dict[str, Any]:
+    """List or search workspace tags. Returns tag IDs, names, and colors. Use search to filter by name.
+
+    Args:
+        search: Optional search string to filter tags by name
+        page_size: Number of tags per page (default 50)
+        page_cursor: Pagination cursor from a previous response
+    """
+    client = get_api_client()
+
+    try:
+        result = await client.list_tags(
+            search=search,
+            page_size=page_size,
+            page_cursor=page_cursor,
+        )
+        if isinstance(result, dict) and result.get("error"):
+            return {
+                "error": f"API error (status {result.get('status_code', 'unknown')}): {result.get('message', 'Unknown error')}",
+            }
+
+        tags = result.get("tags", [])
+        formatted = [
+            {
+                "id": t.get("id"),
+                "name": t.get("name"),
+                "color_hex": t.get("colorHex"),
+            }
+            for t in tags
+        ]
+
+        response: Dict[str, Any] = {
+            "total_returned": len(formatted),
+            "tags": formatted,
+        }
+        pagination = result.get("paginationInfo")
+        if pagination and pagination.get("nextCursor"):
+            response["next_page_cursor"] = pagination["nextCursor"]
+        return response
+
+    except Exception as e:
+        return {"error": True, "message": f"Error listing tags: {str(e)}"}
+
+
+@mcp.tool()
+async def create_tag(
+    name: str,
+    color_hex: Optional[str] = None,
+) -> Dict[str, Any]:
+    """Create a new workspace tag. Tags can be applied to metrics, tables, columns, and other entities.
+
+    Args:
+        name: Tag display name (max 60 characters)
+        color_hex: Optional hex color with # prefix (e.g. "#FF5733"). Must be 3 or 6 hex digits.
+    """
+    if len(name) > 60:
+        return {"error": f"Tag name too long ({len(name)} chars). Maximum is 60 characters."}
+
+    if color_hex and not _COLOR_HEX_RE.match(color_hex):
+        return {"error": f"Invalid color_hex: {color_hex}. Must be # followed by 3 or 6 hex digits (e.g. #FF5733)."}
+
+    client = get_api_client()
+
+    try:
+        result = await client.create_tag(name=name, color_hex=color_hex)
+        if isinstance(result, dict) and result.get("error"):
+            return {
+                "error": f"API error (status {result.get('status_code', 'unknown')}): {result.get('message', 'Unknown error')}",
+            }
+
+        tag = result.get("tag", result)
+        return {
+            "success": True,
+            "tag": {
+                "id": tag.get("id"),
+                "name": tag.get("name"),
+                "color_hex": tag.get("colorHex"),
+            },
+        }
+
+    except Exception as e:
+        return {"error": True, "message": f"Error creating tag: {str(e)}"}
+
+
+@mcp.tool()
+async def update_tag(
+    tag_id: int,
+    name: Optional[str] = None,
+    color_hex: Optional[str] = None,
+) -> Dict[str, Any]:
+    """Update an existing workspace tag's name or color.
+
+    Args:
+        tag_id: ID of the tag to update
+        name: New tag name (optional, max 60 characters)
+        color_hex: New hex color with # prefix (optional, e.g. "#FF5733")
+    """
+    if not name and not color_hex:
+        return {"error": "No fields to update. Provide at least one of: name, color_hex"}
+
+    if name and len(name) > 60:
+        return {"error": f"Tag name too long ({len(name)} chars). Maximum is 60 characters."}
+
+    if color_hex and not _COLOR_HEX_RE.match(color_hex):
+        return {"error": f"Invalid color_hex: {color_hex}. Must be # followed by 3 or 6 hex digits (e.g. #FF5733)."}
+
+    client = get_api_client()
+
+    try:
+        result = await client.update_tag(tag_id=tag_id, name=name, color_hex=color_hex)
+        if isinstance(result, dict) and result.get("error"):
+            return {
+                "error": f"API error (status {result.get('status_code', 'unknown')}): {result.get('message', 'Unknown error')}",
+            }
+
+        tag = result.get("tag", result)
+        return {
+            "success": True,
+            "tag": {
+                "id": tag.get("id"),
+                "name": tag.get("name"),
+                "color_hex": tag.get("colorHex"),
+            },
+        }
+
+    except Exception as e:
+        return {"error": True, "message": f"Error updating tag: {str(e)}"}
+
+
+@mcp.tool()
+async def delete_tag(
+    tag_id: int,
+) -> Dict[str, Any]:
+    """Delete a workspace tag. This removes the tag from all entities it was applied to.
+
+    Args:
+        tag_id: ID of the tag to delete
+    """
+    client = get_api_client()
+
+    try:
+        result = await client.delete_tag(tag_id=tag_id)
+        if isinstance(result, dict) and result.get("error"):
+            return {
+                "error": f"API error (status {result.get('status_code', 'unknown')}): {result.get('message', 'Unknown error')}",
+            }
+
+        tag = result.get("tag", result)
+        return {
+            "success": True,
+            "deleted_tag": {
+                "id": tag.get("id"),
+                "name": tag.get("name"),
+            },
+        }
+
+    except Exception as e:
+        return {"error": True, "message": f"Error deleting tag: {str(e)}"}
+
+
+@mcp.tool()
+async def tag_entity(
+    tag_id: int,
+    entity_id: int,
+    entity_type: str,
+) -> Dict[str, Any]:
+    """Apply a workspace tag to an entity. The tag must already exist (use create_tag first).
+
+    Args:
+        tag_id: ID of the workspace tag to apply
+        entity_id: ID of the entity to tag (e.g. metric ID, table ID)
+        entity_type: Entity type — SOURCE, SCHEMA, TABLE, METRIC, COLUMN, DELTA, SLA, or CUSTOM_RULE
+    """
+    normalized_type, err = _validate_entity_type(entity_type)
+    if err:
+        return err
+
+    client = get_api_client()
+
+    try:
+        result = await client.tag_entity(
+            tag_id=tag_id,
+            entity_id=entity_id,
+            entity_type=normalized_type,
+        )
+        if isinstance(result, dict) and result.get("error"):
+            return {
+                "error": f"API error (status {result.get('status_code', 'unknown')}): {result.get('message', 'Unknown error')}",
+            }
+
+        return {
+            "success": True,
+            "tag_id": tag_id,
+            "entity_id": entity_id,
+            "entity_type": normalized_type,
+        }
+
+    except Exception as e:
+        return {"error": True, "message": f"Error tagging entity: {str(e)}"}
+
+
+@mcp.tool()
+async def untag_entity(
+    tag_id: int,
+    entity_id: int,
+    entity_type: str,
+) -> Dict[str, Any]:
+    """Remove a workspace tag from an entity.
+
+    Args:
+        tag_id: ID of the workspace tag to remove
+        entity_id: ID of the entity to untag
+        entity_type: Entity type — SOURCE, SCHEMA, TABLE, METRIC, COLUMN, DELTA, SLA, or CUSTOM_RULE
+    """
+    normalized_type, err = _validate_entity_type(entity_type)
+    if err:
+        return err
+
+    client = get_api_client()
+
+    try:
+        result = await client.untag_entity(
+            tag_id=tag_id,
+            entity_id=entity_id,
+            entity_type=normalized_type,
+        )
+        if isinstance(result, dict) and result.get("error"):
+            return {
+                "error": f"API error (status {result.get('status_code', 'unknown')}): {result.get('message', 'Unknown error')}",
+            }
+
+        return {
+            "success": True,
+            "tag_id": tag_id,
+            "entity_id": entity_id,
+            "entity_type": normalized_type,
+        }
+
+    except Exception as e:
+        return {"error": True, "message": f"Error untagging entity: {str(e)}"}
+
+
+@mcp.tool()
+async def list_entity_tags(
+    entity_id: int,
+    entity_type: str,
+) -> Dict[str, Any]:
+    """List all tags applied to a specific entity.
+
+    Args:
+        entity_id: ID of the entity
+        entity_type: Entity type — SOURCE, SCHEMA, TABLE, METRIC, COLUMN, DELTA, SLA, or CUSTOM_RULE
+    """
+    normalized_type, err = _validate_entity_type(entity_type)
+    if err:
+        return err
+
+    client = get_api_client()
+
+    try:
+        result = await client.get_entity_tags(
+            entity_type=normalized_type,
+            entity_id=entity_id,
+        )
+        if isinstance(result, dict) and result.get("error"):
+            return {
+                "error": f"API error (status {result.get('status_code', 'unknown')}): {result.get('message', 'Unknown error')}",
+            }
+
+        # v1 endpoint returns {"entityId": ..., "entityType": ..., "tags": ["name1", ...]}
+        tags = result.get("tags", [])
+        return {
+            "entity_id": entity_id,
+            "entity_type": normalized_type,
+            "tags": tags,
+            "total": len(tags),
+        }
+
+    except Exception as e:
+        return {"error": True, "message": f"Error listing entity tags: {str(e)}"}
+
+
 # Run the server if executed directly
 if __name__ == "__main__":
     mcp.run()
