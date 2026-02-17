@@ -101,6 +101,22 @@ METRIC_TYPE_FAMILIES: Dict[str, set] = {
 # Pre-compute prefix patterns for _metric_applies_to_type
 _PREFIX_PATTERNS = {k[:-1]: v for k, v in METRIC_TYPE_FAMILIES.items() if k.endswith("*")}
 
+# Valid lookback types — maps user-friendly aliases to API enum values
+_LOOKBACK_TYPE_MAP = {
+    "DATA_TIME": "DATA_TIME_LOOKBACK_TYPE",
+    "DATA_TIME_LOOKBACK_TYPE": "DATA_TIME_LOOKBACK_TYPE",
+    "CLOCK_TIME": "CLOCK_TIME_LOOKBACK_TYPE",
+    "CLOCK_TIME_LOOKBACK_TYPE": "CLOCK_TIME_LOOKBACK_TYPE",
+    "METRIC_TIME": "METRIC_TIME_LOOKBACK_TYPE",
+    "METRIC_TIME_LOOKBACK_TYPE": "METRIC_TIME_LOOKBACK_TYPE",
+}
+
+# Valid lookback interval types (only DAYS is supported for metric lookback)
+_LOOKBACK_INTERVAL_TYPE_MAP = {
+    "DAYS": "DAYS_TIME_INTERVAL_TYPE",
+    "DAYS_TIME_INTERVAL_TYPE": "DAYS_TIME_INTERVAL_TYPE",
+}
+
 
 def _metric_applies_to_type(metric_type: str, type_family: str) -> bool:
     """Return True if *metric_type* is applicable to a column of *type_family*.
@@ -2935,6 +2951,246 @@ async def list_table_level_metrics() -> Dict[str, Any]:
             "error": True,
             "message": f"Error fetching table-level metric names: {str(e)}",
         }
+
+
+@mcp.tool()
+async def create_metric(
+    table_name: str,
+    metric_type: str,
+    column_name: Optional[str] = None,
+    schema_name: Optional[str] = None,
+    table_id: Optional[int] = None,
+    name: Optional[str] = None,
+    description: Optional[str] = None,
+    lookback_type: Optional[str] = None,
+    lookback_interval_type: Optional[str] = None,
+    lookback_interval_value: Optional[int] = None,
+    filters: Optional[List[str]] = None,
+    group_bys: Optional[List[str]] = None,
+) -> Dict[str, Any]:
+    """Create a new metric (monitor) on a table. Supports predefined metric types like COUNT_ROWS, PERCENT_NULL, FRESHNESS, etc.
+
+    Column-level metrics (e.g. PERCENT_NULL, COUNT_DISTINCT) require column_name.
+    Table-level metrics (e.g. COUNT_ROWS, FRESHNESS) must NOT have column_name.
+
+    Prefer passing table_id (from search_tables) for reliable lookups. Falls back to name-based search if table_id is not provided.
+
+    Args:
+        table_name: Name of the table to create the metric on
+        metric_type: Predefined metric type (e.g. COUNT_ROWS, PERCENT_NULL, FRESHNESS)
+        column_name: Column to monitor (required for column-level metrics, omit for table-level)
+        schema_name: Optional schema name to disambiguate table search
+        table_id: Table ID from search_tables — preferred, avoids ambiguous name lookups
+        name: Optional display name for the metric
+        description: Optional description for the metric
+        lookback_type: Optional lookback type — DATA_TIME, CLOCK_TIME, or METRIC_TIME
+        lookback_interval_type: Optional interval type — only DAYS is supported for metric lookback
+        lookback_interval_value: Optional interval value (e.g. 7)
+        filters: Optional list of SQL filter expressions
+        group_bys: Optional list of column names to group by
+    """
+    client = get_api_client()
+    workspace_id = config.get("workspace_id")
+
+    # 1. Check workspace_id
+    if not workspace_id:
+        return {
+            "error": "Workspace ID not configured",
+            "hint": "Check your Claude Desktop configuration for BIGEYE_WORKSPACE_ID",
+        }
+
+    # 2. Validate metric_type
+    metric_upper = metric_type.upper()
+    known = metric_upper in METRIC_TYPE_FAMILIES
+    if not known:
+        # Check prefix patterns
+        for prefix in _PREFIX_PATTERNS:
+            if metric_upper.startswith(prefix):
+                known = True
+                break
+    if not known:
+        return {
+            "error": f"Unknown metric type: {metric_type}",
+            "known_types": sorted(METRIC_TYPE_FAMILIES.keys()),
+            "hint": "Use one of the known metric types listed above",
+        }
+
+    # Validate and map lookback_type enum
+    if lookback_type:
+        lt_upper = lookback_type.upper()
+        if lt_upper not in _LOOKBACK_TYPE_MAP:
+            return {
+                "error": f"Invalid lookback_type: {lookback_type}",
+                "valid_values": sorted(set(_LOOKBACK_TYPE_MAP.values())),
+                "hint": "Use DATA_TIME, CLOCK_TIME, or METRIC_TIME",
+            }
+        lookback_type = _LOOKBACK_TYPE_MAP[lt_upper]
+
+    # Validate and map lookback_interval_type enum
+    if lookback_interval_type:
+        lit_upper = lookback_interval_type.upper()
+        if lit_upper not in _LOOKBACK_INTERVAL_TYPE_MAP:
+            return {
+                "error": f"Invalid lookback_interval_type: {lookback_interval_type}",
+                "valid_values": sorted(set(_LOOKBACK_INTERVAL_TYPE_MAP.values())),
+                "hint": "Only DAYS (DAYS_TIME_INTERVAL_TYPE) is supported for metric lookback",
+            }
+        lookback_interval_type = _LOOKBACK_INTERVAL_TYPE_MAP[lit_upper]
+
+    # 3. Determine if metric is table-level or column-level
+    try:
+        table_level_result = await client.get_table_level_metric_names()
+        table_level_names: set = set()
+        if isinstance(table_level_result, dict):
+            for key in ("metricNames", "metric_names", "names"):
+                if key in table_level_result:
+                    table_level_names = set(table_level_result[key])
+                    break
+        elif isinstance(table_level_result, list):
+            table_level_names = set(table_level_result)
+    except Exception:
+        table_level_names = set()
+
+    is_table_level = metric_upper in table_level_names
+
+    # 4. Column-level metric without column_name
+    if not is_table_level and not column_name:
+        return {
+            "error": f"Metric type '{metric_upper}' is column-level and requires a column_name",
+            "hint": "Provide the column_name parameter",
+        }
+
+    # 5. Table-level metric with column_name
+    if is_table_level and column_name:
+        return {
+            "error": f"Metric type '{metric_upper}' is table-level and does not use a column_name",
+            "hint": "Remove the column_name parameter",
+        }
+
+    # 6. Resolve table
+    debug_print(f"Creating metric {metric_upper} on table {table_name or table_id}")
+
+    try:
+        if table_id:
+            table_result = await client.fetch_tables(
+                workspace_id=workspace_id,
+                table_ids=[table_id],
+                include_columns=True,
+            )
+        else:
+            table_result = await client.search_tables(
+                workspace_id=workspace_id,
+                table_name=table_name,
+                schema_names=[schema_name] if schema_name else None,
+                include_columns=True,
+            )
+        tables = table_result.get("tables", []) if isinstance(table_result, dict) else []
+    except Exception as e:
+        return {"error": f"Error searching for table: {str(e)}"}
+
+    if not tables:
+        identifier = f"ID {table_id}" if table_id else f"'{table_name}'"
+        return {"error": f"Table {identifier} not found"}
+
+    # 7. Multiple tables — disambiguate
+    if len(tables) > 1 and not table_id:
+        return {
+            "error": "Multiple tables match — please specify table_id or schema_name to disambiguate",
+            "matching_tables": [
+                {
+                    "id": t.get("id"),
+                    "name": t.get("name"),
+                    "schema": t.get("schemaName"),
+                    "database": t.get("databaseName"),
+                    "warehouse": t.get("warehouseName"),
+                }
+                for t in tables
+            ],
+        }
+
+    table = tables[0]
+    resolved_table_id = table.get("id")
+    warehouse_id = table.get("warehouseId")
+    columns = table.get("columns", [])
+
+    # 8. Extract dataset_id + warehouse_id
+    if not resolved_table_id or not warehouse_id:
+        return {"error": f"Table '{table_name}' found but missing id or warehouseId"}
+
+    # 9. Validate column exists (for column-level metrics)
+    if column_name:
+        matched_col = None
+        for col in columns:
+            if col.get("name", "").lower() == column_name.lower():
+                matched_col = col
+                break
+        if not matched_col:
+            available = sorted(col.get("name", "") for col in columns)
+            return {
+                "error": f"Column '{column_name}' not found on table '{table.get('name', '')}'",
+                "available_columns": available,
+            }
+
+        # 10. Check column type compatibility
+        raw_type = matched_col.get("dataType", "")
+        type_family = _normalize_data_type(raw_type)
+        if not _metric_applies_to_type(metric_upper, type_family):
+            required_families = METRIC_TYPE_FAMILIES.get(metric_upper, set())
+            if not required_families:
+                for prefix, fam in _PREFIX_PATTERNS.items():
+                    if metric_upper.startswith(prefix):
+                        required_families = fam
+                        break
+            return {
+                "error": f"Metric '{metric_upper}' does not apply to column '{column_name}' (type: {raw_type}, family: {type_family})",
+                "required_type_families": sorted(required_families),
+            }
+        # Use the exact column name from the API (preserves casing)
+        column_name = matched_col.get("name", column_name)
+
+    # For table-level metrics the API still requires a parameters entry
+    # with a column reference.  Pick the first column from the table.
+    if is_table_level and not column_name and columns:
+        column_name = columns[0].get("name")
+
+    # All validations passed — create the metric
+    try:
+        result = await client.create_metric(
+            warehouse_id=warehouse_id,
+            dataset_id=resolved_table_id,
+            metric_name=metric_upper,
+            column_name=column_name,
+            name=name,
+            description=description,
+            lookback_type=lookback_type,
+            lookback_interval_type=lookback_interval_type,
+            lookback_interval_value=lookback_interval_value,
+            filters=filters,
+            group_bys=group_bys,
+        )
+    except Exception as e:
+        return {"error": f"Error creating metric: {str(e)}"}
+
+    # Check for API error response (make_request returns error dict for HTTP 400+)
+    if isinstance(result, dict) and result.get("error"):
+        return {
+            "error": f"API error (status {result.get('status_code', 'unknown')}): {result.get('message', 'Unknown error')}",
+        }
+
+    # Extract metric ID from response
+    metric_id = None
+    if isinstance(result, dict):
+        metric_id = result.get("id") or result.get("metricId")
+        # Some responses nest under a "metric" key
+        if not metric_id and "metric" in result:
+            metric_id = result["metric"].get("id")
+
+    return {
+        "success": True,
+        "message": f"Created {metric_upper} metric on table '{table.get('name', '')}'{'.' + column_name if column_name else ''}",
+        "metric_id": metric_id,
+        "metric": result,
+    }
 
 
 async def _compute_dimension_coverage(

@@ -1434,8 +1434,9 @@ class BigeyeAPIClient:
             "tableIds": table_ids,
         }
 
-        if not include_columns:
-            payload["ignoreFields"] = True
+        # The /api/v1/tables/fetch endpoint defaults to excluding columns;
+        # ignoreFields must be explicitly set to false to include them.
+        payload["ignoreFields"] = not include_columns
 
         return await self.make_request(
             "/api/v1/tables/fetch",
@@ -1496,6 +1497,79 @@ class BigeyeAPIClient:
         return await self.make_request(
             "/api/v1/metrics/table-level-metric-names",
             method="GET",
+        )
+
+    async def create_metric(
+        self,
+        warehouse_id: int,
+        dataset_id: int,
+        metric_name: str,
+        column_name: Optional[str] = None,
+        name: Optional[str] = None,
+        description: Optional[str] = None,
+        lookback_type: Optional[str] = None,
+        lookback_interval_type: Optional[str] = None,
+        lookback_interval_value: Optional[int] = None,
+        filters: Optional[List[str]] = None,
+        group_bys: Optional[List[str]] = None,
+    ) -> Dict[str, Any]:
+        """Create a metric (monitor) via POST /api/v1/metrics.
+
+        Args:
+            warehouse_id: The warehouse ID the table belongs to
+            dataset_id: The dataset (table) ID to monitor
+            metric_name: Predefined metric name (e.g. COUNT_ROWS, PERCENT_NULL)
+            column_name: Column to monitor (required for column-level metrics)
+            name: Optional display name for the metric
+            description: Optional description
+            lookback_type: Optional lookback type — DATA_TIME, CLOCK_TIME, or METRIC_TIME
+            lookback_interval_type: Optional interval type — only DAYS is supported for metric lookback
+            lookback_interval_value: Optional interval value (e.g. 7)
+            filters: Optional list of SQL filter expressions
+            group_bys: Optional list of column names to group by
+
+        Returns:
+            Dictionary containing the created metric
+        """
+        payload: Dict[str, Any] = {
+            "warehouseId": warehouse_id,
+            "datasetId": dataset_id,
+            "metricType": {
+                "predefinedMetric": {
+                    "metricName": metric_name,
+                },
+            },
+        }
+
+        if column_name:
+            payload["parameters"] = [{"key": "arg1", "columnName": column_name}]
+
+        if name:
+            payload["name"] = name
+        if description:
+            payload["description"] = description
+
+        if lookback_type:
+            payload["lookbackType"] = lookback_type
+        if lookback_interval_type or lookback_interval_value:
+            lookback: Dict[str, Any] = {}
+            if lookback_interval_type:
+                lookback["intervalType"] = lookback_interval_type
+            if lookback_interval_value:
+                lookback["intervalValue"] = lookback_interval_value
+            payload["lookback"] = lookback
+
+        if filters:
+            payload["filters"] = filters
+        if group_bys:
+            payload["groupBys"] = group_bys
+
+        print(f"[BIGEYE API DEBUG] Creating metric: {payload}", file=sys.stderr)
+
+        return await self.make_request(
+            "/api/v1/metrics",
+            method="POST",
+            json_data=payload,
         )
 
     async def search_lineage_v2(
