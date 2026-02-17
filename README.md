@@ -156,6 +156,8 @@ To connect to multiple Bigeye instances (e.g. demo and production), create separ
 ### Metrics & Quality
 
 - **`list_table_metrics`** — List all metrics (monitors) configured on a table
+- **`list_table_level_metrics`** — List metric types that are table-level (vs column-level)
+- **`create_metric`** — Create a new metric (monitor) on a table with validation, enum mapping, and column-type compatibility checks
 - **`get_table_profile`** — Get data profile report including column statistics and distribution
 - **`create_profile_job`** — Queue a new data profiling job for a table
 - **`get_profile_job_status`** — Check the status of a profiling job
@@ -199,6 +201,16 @@ To connect to multiple Bigeye instances (e.g. demo and production), create separ
 - **`delete_dimension`** — Delete a Data Dimension
 - **`get_table_dimension_coverage`** — Analyze dimension coverage gaps for a table (recommended for "what monitoring is missing?")
 - **`get_column_dimension_coverage`** — Analyze dimension coverage for specific columns in a table
+
+### Tags
+
+- **`list_tags`** — List or search workspace tags
+- **`create_tag`** — Create a new tag with optional color
+- **`update_tag`** — Update a tag's name or color
+- **`delete_tag`** — Delete a tag
+- **`tag_entity`** — Apply a tag to any entity (metric, table, column, etc.)
+- **`untag_entity`** — Remove a tag from an entity
+- **`list_entity_tags`** — List all tags on a specific entity
 
 ### System
 
