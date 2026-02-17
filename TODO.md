@@ -35,13 +35,20 @@
    - Params: `table_identifier`
    - Purpose: Identify monitoring blind spots
 
-3. **create_metric**
-   - Params: `table_identifier`, `metric_type`, `configuration`
-   - Purpose: Programmatically add monitoring
+3. ~~**create_metric**~~ ✅ Implemented
+   - Params: `table_name`, `metric_type`, `column_name`, `schema_name`, `table_id`, `name`, `description`, `lookback_type`, `lookback_interval_type`, `lookback_interval_value`, `filters`, `group_bys`
+   - Includes: metric type validation, column type compatibility checks, lookback enum mapping, error propagation
 
 4. **get_metric_history**
    - Params: `metric_id`, `time_range`
    - Purpose: Trend analysis and pattern detection
+
+### Tag Management Tools
+
+10. ~~**list_tags, create_tag, update_tag, delete_tag, tag_entity, untag_entity, list_entity_tags**~~ ✅ Implemented
+   - Full CRUD for workspace tags (v2 API) plus tag/untag any entity type
+   - Supports: metrics, tables, columns, schemas, sources, deltas, SLAs, custom rules
+   - Includes: entity type validation/normalization, color hex validation, name length validation
 
 ### Incident Management Tools
 
