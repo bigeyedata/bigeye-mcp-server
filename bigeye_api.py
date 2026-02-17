@@ -1572,6 +1572,162 @@ class BigeyeAPIClient:
             json_data=payload,
         )
 
+    async def list_tags(
+        self,
+        search: Optional[str] = None,
+        page_size: int = 50,
+        page_cursor: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """List workspace tags via POST /api/v2/tags/fetch.
+
+        Args:
+            search: Optional search string to filter tags by name
+            page_size: Number of tags per page (default 50)
+            page_cursor: Cursor for pagination
+        """
+        payload: Dict[str, Any] = {
+            "workspaceId": self.workspace_id,
+            "pageSize": page_size,
+        }
+        if search:
+            payload["search"] = search
+        if page_cursor:
+            payload["pageCursor"] = page_cursor
+
+        return await self.make_request(
+            "/api/v2/tags/fetch",
+            method="POST",
+            json_data=payload,
+        )
+
+    async def create_tag(
+        self,
+        name: str,
+        color_hex: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """Create a workspace tag via POST /api/v2/tags.
+
+        Args:
+            name: Tag display name (max 60 chars)
+            color_hex: Optional hex color with # prefix (e.g. "#FF5733")
+        """
+        tag: Dict[str, Any] = {
+            "name": name,
+            "workspaceId": self.workspace_id,
+        }
+        if color_hex:
+            tag["colorHex"] = color_hex
+
+        return await self.make_request(
+            "/api/v2/tags",
+            method="POST",
+            json_data={"tag": tag},
+        )
+
+    async def update_tag(
+        self,
+        tag_id: int,
+        name: Optional[str] = None,
+        color_hex: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """Update a workspace tag via PUT /api/v2/tags/{id}.
+
+        Args:
+            tag_id: ID of the tag to update
+            name: New tag name (optional)
+            color_hex: New hex color with # prefix (optional)
+        """
+        tag: Dict[str, Any] = {"id": tag_id}
+        if name:
+            tag["name"] = name
+        if color_hex:
+            tag["colorHex"] = color_hex
+
+        return await self.make_request(
+            f"/api/v2/tags/{tag_id}",
+            method="PUT",
+            json_data={"tag": tag},
+        )
+
+    async def delete_tag(self, tag_id: int) -> Dict[str, Any]:
+        """Delete a workspace tag via DELETE /api/v2/tags/{id}.
+
+        Args:
+            tag_id: ID of the tag to delete
+        """
+        return await self.make_request(
+            f"/api/v2/tags/{tag_id}",
+            method="DELETE",
+        )
+
+    async def tag_entity(
+        self,
+        tag_id: int,
+        entity_id: int,
+        entity_type: str,
+    ) -> Dict[str, Any]:
+        """Apply a workspace tag to an entity via POST /api/v2/tags/tag.
+
+        Args:
+            tag_id: ID of the workspace tag
+            entity_id: ID of the entity to tag
+            entity_type: Enum string e.g. TAGGABLE_ENTITY_TYPE_METRIC
+        """
+        return await self.make_request(
+            "/api/v2/tags/tag",
+            method="POST",
+            json_data={
+                "tag": {
+                    "entityId": entity_id,
+                    "entityType": entity_type,
+                    "workspaceTag": {"id": tag_id},
+                },
+                "createTagIfDoesNotExist": False,
+            },
+        )
+
+    async def untag_entity(
+        self,
+        tag_id: int,
+        entity_id: int,
+        entity_type: str,
+    ) -> Dict[str, Any]:
+        """Remove a workspace tag from an entity via POST /api/v2/tags/untag.
+
+        Args:
+            tag_id: ID of the workspace tag
+            entity_id: ID of the entity to untag
+            entity_type: Enum string e.g. TAGGABLE_ENTITY_TYPE_METRIC
+        """
+        return await self.make_request(
+            "/api/v2/tags/untag",
+            method="POST",
+            json_data={
+                "tag": {
+                    "entityId": entity_id,
+                    "entityType": entity_type,
+                    "workspaceTag": {"id": tag_id},
+                },
+            },
+        )
+
+    async def get_entity_tags(
+        self,
+        entity_type: str,
+        entity_id: int,
+    ) -> Dict[str, Any]:
+        """Get all tags on an entity via GET /api/v1/tags/{entity_type}/{entity_id}.
+
+        Uses the v1 endpoint because v2 has no 'all tags on entity X' query.
+
+        Args:
+            entity_type: Enum string e.g. TAGGABLE_ENTITY_TYPE_METRIC
+            entity_id: ID of the entity
+        """
+        return await self.make_request(
+            f"/api/v1/tags/{entity_type}/{entity_id}",
+        )
+
     async def search_lineage_v2(
         self,
         search_string: str,
