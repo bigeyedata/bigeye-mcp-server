@@ -361,6 +361,77 @@ def debug_print(message: str):
     if config["debug"] or os.environ.get("BIGEYE_DEBUG", "false").lower() in ["true", "1", "yes"]:
         print(f"[BIGEYE MCP DEBUG] {message}", file=sys.stderr)
 
+
+async def _resolve_table(
+    client: BigeyeAPIClient,
+    workspace_id: int,
+    table_name: str,
+    schema_name: Optional[str] = None,
+    include_columns: bool = False,
+) -> Dict[str, Any]:
+    """Resolve a table by name, handling case-insensitivity and the DATABASE.SCHEMA quirk.
+
+    Bigeye stores schema names as DATABASE.SCHEMA (e.g. TOOY_DEMO_V2.PROD_REPL).
+    Callers often pass just the schema portion (e.g. "prod_repl") or use the wrong
+    case.  This helper tries:
+      1. Exact search with the provided schema_name (uppercased).
+      2. If no results and schema_name has no dot, retry without the schema filter
+         and match client-side using a suffix match on schemaName.
+      3. If still no results, retry with just the table name (no schema filter).
+
+    Returns the first matching table dict, or an error dict with 'error' key.
+    """
+    uc_table = table_name.upper()
+    uc_schema = schema_name.upper() if schema_name else None
+
+    # Attempt 1: search with both filters
+    result = await client.search_tables(
+        workspace_id=workspace_id,
+        table_name=uc_table,
+        schema_names=[uc_schema] if uc_schema else None,
+        include_columns=include_columns,
+    )
+    tables = result.get("tables", [])
+
+    # Attempt 2: if schema was provided but has no dot, it's probably just the
+    # schema portion — retry without schema filter and match client-side.
+    if not tables and uc_schema and "." not in uc_schema:
+        debug_print(
+            f"No results for table={uc_table} schema={uc_schema}; "
+            "retrying without schema filter (suffix match)"
+        )
+        result = await client.search_tables(
+            workspace_id=workspace_id,
+            table_name=uc_table,
+            include_columns=include_columns,
+        )
+        tables = [
+            t for t in result.get("tables", [])
+            if (t.get("schemaName") or "").upper().endswith(uc_schema)
+        ]
+
+    # Attempt 3: last resort — just table name, no schema
+    if not tables and uc_schema:
+        debug_print(
+            f"Still no results; retrying with just table_name={uc_table}"
+        )
+        result = await client.search_tables(
+            workspace_id=workspace_id,
+            table_name=uc_table,
+            include_columns=include_columns,
+        )
+        tables = result.get("tables", [])
+
+    if not tables:
+        return {"error": True, "message": f"Table '{table_name}' not found in Bigeye catalog"}
+
+    table = tables[0]
+    if not table.get("id"):
+        return {"error": True, "message": f"Table '{table_name}' found but has no ID"}
+
+    return table
+
+
 # Initialize clients
 auth_client = BigeyeAuthClient()
 api_client = None
@@ -1177,18 +1248,11 @@ async def list_table_metrics(
 
     try:
         # Resolve table name → table ID (GET /api/v1/metrics requires tableIds, not tableName)
-        table_result = await client.search_tables(
-            workspace_id=workspace_id,
-            table_name=table_name,
-            schema_names=[schema_name] if schema_name else None,
-        )
-        tables = table_result.get("tables", [])
-        if not tables:
-            return {"error": True, "message": f"Table '{table_name}' not found in Bigeye catalog"}
+        table = await _resolve_table(client, workspace_id, table_name, schema_name)
+        if table.get("error"):
+            return table
 
-        table_id = tables[0].get("id")
-        if not table_id:
-            return {"error": True, "message": f"Table '{table_name}' found but has no ID"}
+        table_id = table["id"]
 
         result = await client.get_table_metrics(
             workspace_id=workspace_id,
@@ -3285,19 +3349,17 @@ async def _compute_dimension_coverage(
                 table_ids=[table_id],
                 include_columns=True,
             )
+            tables = table_result.get("tables", []) if isinstance(table_result, dict) else []
+            if not tables:
+                return {"error": f"Table ID {table_id} not found"}
+            table = tables[0]
         else:
-            table_result = await client.search_tables(
-                workspace_id=workspace_id,
-                table_name=table_name,
-                schema_names=[schema_name] if schema_name else None,
-                include_columns=True,
+            table = await _resolve_table(
+                client, workspace_id, table_name, schema_name, include_columns=True,
             )
-        tables = table_result.get("tables", []) if isinstance(table_result, dict) else []
-        if not tables:
-            identifier = f"ID {table_id}" if table_id else f"'{table_name}'"
-            return {"error": f"Table {identifier} not found"}
+            if table.get("error"):
+                return table
 
-        table = tables[0]
         columns = table.get("columns", [])
 
         # If column_names filter is provided, validate and filter
