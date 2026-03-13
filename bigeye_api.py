@@ -1791,3 +1791,89 @@ class BigeyeAPIClient:
             method="POST",
             json_data=payload
         )
+
+    async def fetch_data_classes(
+        self,
+        workspace_id: int,
+        search: Optional[str] = None,
+        sensitivities: Optional[List[str]] = None,
+        page_size: Optional[int] = None,
+        page_cursor: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """Fetch data classification categories via POST /api/v1/sds/data-class/fetch.
+
+        Args:
+            workspace_id: The workspace ID
+            search: Optional search string to filter by name
+            sensitivities: Optional list of sensitivity level filters
+            page_size: Optional number of results per page
+            page_cursor: Optional pagination cursor
+        """
+        payload: Dict[str, Any] = {
+            "workspaceId": workspace_id,
+        }
+        if search:
+            payload["search"] = search
+        if sensitivities:
+            payload["sensitivities"] = sensitivities
+        if page_size is not None:
+            payload["pageSize"] = page_size
+        if page_cursor:
+            payload["pageCursor"] = page_cursor
+
+        return await self.make_request(
+            "/api/v1/sds/data-class/fetch",
+            method="POST",
+            json_data=payload,
+        )
+
+    async def fetch_scan_findings(
+        self,
+        workspace_id: int,
+        table_ids: Optional[List[int]] = None,
+        column_ids: Optional[List[int]] = None,
+        data_class_ids: Optional[List[int]] = None,
+        sensitivities: Optional[List[str]] = None,
+        positive_or_negative_findings: Optional[str] = None,
+        search: Optional[str] = None,
+        page_size: Optional[int] = None,
+        page_cursor: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """Fetch aggregate scan findings via POST /api/v1/sds/scan-job/findings/aggregate.
+
+        Args:
+            workspace_id: The workspace ID
+            table_ids: Optional list of table IDs to filter by
+            column_ids: Optional list of column IDs to filter by
+            data_class_ids: Optional list of data class IDs to filter by
+            sensitivities: Optional list of sensitivity level filters
+            positive_or_negative_findings: Optional "TRUE" or "FALSE" to filter findings
+            search: Optional search string to filter results
+            page_size: Optional number of results per page
+            page_cursor: Optional pagination cursor
+        """
+        payload: Dict[str, Any] = {
+            "workspaceId": workspace_id,
+        }
+        if table_ids:
+            payload["tableIds"] = table_ids
+        if column_ids:
+            payload["columnIds"] = column_ids
+        if data_class_ids:
+            payload["dataClassIds"] = data_class_ids
+        if sensitivities:
+            payload["sensitivities"] = sensitivities
+        if positive_or_negative_findings:
+            payload["positiveOrNegativeFindings"] = positive_or_negative_findings
+        if search:
+            payload["search"] = search
+        if page_size is not None:
+            payload["pageSize"] = page_size
+        if page_cursor:
+            payload["pageCursor"] = page_cursor
+
+        return await self.make_request(
+            "/api/v1/sds/scan-job/findings/aggregate",
+            method="POST",
+            json_data=payload,
+        )

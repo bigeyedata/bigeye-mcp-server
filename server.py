@@ -3839,6 +3839,181 @@ async def list_entity_tags(
         return {"error": True, "message": f"Error listing entity tags: {str(e)}"}
 
 
+@mcp.tool()
+async def list_data_classes(
+    search: Optional[str] = None,
+    sensitivities: Optional[List[str]] = None,
+    page_size: Optional[int] = None,
+    page_cursor: Optional[str] = None,
+) -> Dict[str, Any]:
+    """List data classification categories configured in Bigeye.
+
+    Returns data classes (e.g., "Email Address", "Credit Card", "US SSN") with their
+    sensitivity levels (PUBLIC, INTERNAL, CONFIDENTIAL, RESTRICTED).
+
+    Args:
+        search: Optional search string to filter data classes by name
+        sensitivities: Optional list of sensitivity levels to filter by. Possible values:
+            - DATA_SENSITIVITY_PUBLIC
+            - DATA_SENSITIVITY_INTERNAL
+            - DATA_SENSITIVITY_CONFIDENTIAL
+            - DATA_SENSITIVITY_RESTRICTED
+        page_size: Optional number of results per page
+        page_cursor: Cursor for pagination
+
+    Returns:
+        Dictionary containing data classes with their names, sensitivity levels, and descriptions
+    """
+    client = get_api_client()
+    workspace_id = config.get("workspace_id")
+
+    if not workspace_id:
+        return {
+            "error": "Workspace ID not configured",
+            "hint": "Check your Claude Desktop configuration for BIGEYE_WORKSPACE_ID",
+        }
+
+    try:
+        debug_print(f"Fetching data classes (search={search}, sensitivities={sensitivities})")
+        result = await client.fetch_data_classes(
+            workspace_id=workspace_id,
+            search=search,
+            sensitivities=sensitivities,
+            page_size=page_size,
+            page_cursor=page_cursor,
+        )
+        if isinstance(result, dict) and result.get("error"):
+            return {
+                "error": f"API error (status {result.get('status_code', 'unknown')}): {result.get('message', 'Unknown error')}",
+            }
+
+        data_classes = result.get("dataClasses", [])
+        formatted = [
+            {
+                "id": dc.get("id"),
+                "name": dc.get("name"),
+                "sensitivity": dc.get("sensitivity"),
+                "description": dc.get("description"),
+                "color_hex": dc.get("colorHex"),
+                "provided_by_bigeye": dc.get("providedByBigeye"),
+                "number_of_classifiers": dc.get("numberOfClassifiers"),
+            }
+            for dc in data_classes
+        ]
+
+        response: Dict[str, Any] = {
+            "total_returned": len(formatted),
+            "data_classes": formatted,
+        }
+        pagination = result.get("paginationInfo")
+        if pagination and pagination.get("nextCursor"):
+            response["next_page_cursor"] = pagination["nextCursor"]
+        return response
+
+    except Exception as e:
+        return {"error": True, "message": f"Error listing data classes: {str(e)}"}
+
+
+@mcp.tool()
+async def get_scan_findings(
+    table_ids: Optional[List[int]] = None,
+    column_ids: Optional[List[int]] = None,
+    data_class_ids: Optional[List[int]] = None,
+    sensitivities: Optional[List[str]] = None,
+    positive_only: bool = False,
+    search: Optional[str] = None,
+    page_size: Optional[int] = None,
+    page_cursor: Optional[str] = None,
+) -> Dict[str, Any]:
+    """Get data classification scan findings from Bigeye.
+
+    Returns column-level classification results showing which columns contain
+    sensitive data (PII, PHI, financial data, etc.) based on Bigeye's classification scans.
+    Uses aggregate findings (current state across all scan runs).
+
+    Args:
+        table_ids: Optional list of Bigeye table IDs to filter findings for specific tables
+        column_ids: Optional list of Bigeye column IDs to filter findings for specific columns
+        data_class_ids: Optional list of data class IDs to filter by classification type
+        sensitivities: Optional list of sensitivity levels to filter by. Possible values:
+            - DATA_SENSITIVITY_PUBLIC
+            - DATA_SENSITIVITY_INTERNAL
+            - DATA_SENSITIVITY_CONFIDENTIAL
+            - DATA_SENSITIVITY_RESTRICTED
+        positive_only: If true, only return findings where sensitive data was detected.
+            If false (default), return both positive and negative findings.
+        search: Optional search string to filter results
+        page_size: Optional number of results per page
+        page_cursor: Cursor for pagination
+
+    Returns:
+        Dictionary containing scan findings with column, data class, sensitivity,
+        rows scanned/matched, and scan metadata for each finding
+    """
+    client = get_api_client()
+    workspace_id = config.get("workspace_id")
+
+    if not workspace_id:
+        return {
+            "error": "Workspace ID not configured",
+            "hint": "Check your Claude Desktop configuration for BIGEYE_WORKSPACE_ID",
+        }
+
+    positive_or_negative = "TRUE" if positive_only else None
+
+    try:
+        debug_print(
+            f"Fetching scan findings (table_ids={table_ids}, column_ids={column_ids}, "
+            f"data_class_ids={data_class_ids}, sensitivities={sensitivities}, "
+            f"positive_only={positive_only})"
+        )
+        result = await client.fetch_scan_findings(
+            workspace_id=workspace_id,
+            table_ids=table_ids,
+            column_ids=column_ids,
+            data_class_ids=data_class_ids,
+            sensitivities=sensitivities,
+            positive_or_negative_findings=positive_or_negative,
+            search=search,
+            page_size=page_size,
+            page_cursor=page_cursor,
+        )
+        if isinstance(result, dict) and result.get("error"):
+            return {
+                "error": f"API error (status {result.get('status_code', 'unknown')}): {result.get('message', 'Unknown error')}",
+            }
+
+        findings = result.get("findings", [])
+        formatted = [
+            {
+                "scan_job": f.get("scanJob"),
+                "source": f.get("source"),
+                "schema": f.get("schema"),
+                "table": f.get("table"),
+                "column": f.get("column"),
+                "classifier": f.get("classifier"),
+                "data_class": f.get("dataClass"),
+                "is_positive": f.get("isPositive"),
+                "rows_scanned": f.get("rowsScanned"),
+                "rows_matched": f.get("rowsMatched"),
+                "scan_type": f.get("scanType"),
+            }
+            for f in findings
+        ]
+
+        response: Dict[str, Any] = {
+            "total_returned": len(formatted),
+            "findings": formatted,
+        }
+        pagination = result.get("paginationInfo")
+        if pagination and pagination.get("nextCursor"):
+            response["next_page_cursor"] = pagination["nextCursor"]
+        return response
+
+    except Exception as e:
+        return {"error": True, "message": f"Error fetching scan findings: {str(e)}"}
+
+
 # Run the server if executed directly
 if __name__ == "__main__":
     mcp.run()
