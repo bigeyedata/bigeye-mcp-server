@@ -50,6 +50,14 @@
    - Supports: metrics, tables, columns, schemas, sources, deltas, SLAs, custom rules
    - Includes: entity type validation/normalization, color hex validation, name length validation
 
+### Sensitive Data Scanning Tools
+
+11. ~~**list_data_classes, get_scan_findings**~~ ✅ Implemented
+   - list_data_classes: fetches data classification categories with sensitivity levels
+   - get_scan_findings: fetches column-level classification scan results (aggregate findings)
+   - Supports: filtering by sensitivity, data class, table/column IDs, positive-only findings
+   - Includes: pagination, search filtering
+
 ### Incident Management Tools
 
 5. **get_sla_compliance**
