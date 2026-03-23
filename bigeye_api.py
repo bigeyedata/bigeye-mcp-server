@@ -1791,3 +1791,95 @@ class BigeyeAPIClient:
             method="POST",
             json_data=payload
         )
+
+    async def get_sds_snapshot_findings(
+        self,
+        workspace_id: int,
+        table_ids: Optional[List[int]] = None,
+        schema_ids: Optional[List[int]] = None,
+        source_ids: Optional[List[int]] = None,
+        scan_job_ids: Optional[List[int]] = None,
+        scan_run_ids: Optional[List[int]] = None,
+        classifier_ids: Optional[List[int]] = None,
+        data_class_ids: Optional[List[int]] = None,
+        sensitivities: Optional[List[str]] = None,
+        positive_only: Optional[bool] = None,
+        page_size: Optional[int] = None,
+        page_cursor: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """Get snapshot sensitive data findings via POST /api/v1/sds/scan-job/findings/snapshot."""
+        payload: Dict[str, Any] = {"workspaceId": workspace_id}
+        if table_ids:
+            payload["tableIds"] = table_ids
+        if schema_ids:
+            payload["schemaIds"] = schema_ids
+        if source_ids:
+            payload["sourceIds"] = source_ids
+        if scan_job_ids:
+            payload["scanJobIds"] = scan_job_ids
+        if scan_run_ids:
+            payload["scanRunIds"] = scan_run_ids
+        if classifier_ids:
+            payload["classifierIds"] = classifier_ids
+        if data_class_ids:
+            payload["dataClassIds"] = data_class_ids
+        if sensitivities:
+            payload["sensitivities"] = sensitivities
+        if positive_only is not None:
+            # THREE_LEGGED_BOOLEAN_TRUE = positive only, THREE_LEGGED_BOOLEAN_FALSE = negative only
+            payload["positiveOrNegativeFindings"] = (
+                "THREE_LEGGED_BOOLEAN_TRUE" if positive_only else "THREE_LEGGED_BOOLEAN_FALSE"
+            )
+        if page_size:
+            payload["pageSize"] = page_size
+        if page_cursor:
+            payload["pageCursor"] = page_cursor
+        return await self.make_request(
+            "/api/v1/sds/scan-job/findings/snapshot",
+            method="POST",
+            json_data=payload,
+        )
+
+    async def get_sds_aggregate_findings(
+        self,
+        workspace_id: int,
+        table_ids: Optional[List[int]] = None,
+        schema_ids: Optional[List[int]] = None,
+        source_ids: Optional[List[int]] = None,
+        scan_job_ids: Optional[List[int]] = None,
+        classifier_ids: Optional[List[int]] = None,
+        data_class_ids: Optional[List[int]] = None,
+        sensitivities: Optional[List[str]] = None,
+        positive_only: Optional[bool] = None,
+        page_size: Optional[int] = None,
+        page_cursor: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """Get aggregate sensitive data findings via POST /api/v1/sds/scan-job/findings/aggregate."""
+        payload: Dict[str, Any] = {"workspaceId": workspace_id}
+        if table_ids:
+            payload["tableIds"] = table_ids
+        if schema_ids:
+            payload["schemaIds"] = schema_ids
+        if source_ids:
+            payload["sourceIds"] = source_ids
+        if scan_job_ids:
+            payload["scanJobIds"] = scan_job_ids
+        if classifier_ids:
+            payload["classifierIds"] = classifier_ids
+        if data_class_ids:
+            payload["dataClassIds"] = data_class_ids
+        if sensitivities:
+            payload["sensitivities"] = sensitivities
+        if positive_only is not None:
+            payload["positiveOrNegativeFindings"] = (
+                "THREE_LEGGED_BOOLEAN_TRUE" if positive_only else "THREE_LEGGED_BOOLEAN_FALSE"
+            )
+        if page_size:
+            payload["pageSize"] = page_size
+        if page_cursor:
+            payload["pageCursor"] = page_cursor
+        return await self.make_request(
+            "/api/v1/sds/scan-job/findings/aggregate",
+            method="POST",
+            json_data=payload,
+        )

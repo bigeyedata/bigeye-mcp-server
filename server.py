@@ -3839,6 +3839,118 @@ async def list_entity_tags(
         return {"error": True, "message": f"Error listing entity tags: {str(e)}"}
 
 
+@mcp.tool()
+async def get_table_sensitivity_findings(
+    table_name: str,
+    schema_name: Optional[str] = None,
+    finding_type: str = "aggregate",
+    sensitivities: Optional[List[str]] = None,
+    positive_only: Optional[bool] = None,
+    page_size: Optional[int] = None,
+    page_cursor: Optional[str] = None,
+) -> Dict[str, Any]:
+    """Get sensitive data scan findings for a specific table.
+
+    Searches for the table, then fetches sensitivity findings from Bigeye's
+    Sensitive Data Scanning (SDS) feature showing which columns contain PII
+    or sensitive data and what data classes were detected.
+
+    Args:
+        table_name: Name of the table to get sensitivity findings for
+        schema_name: Optional schema name to narrow the table search
+        finding_type: Either "aggregate" (all-time summary, default) or "snapshot"
+            (findings from a specific scan run)
+        sensitivities: Optional list of sensitivity levels to filter by.
+            Valid values: PUBLIC, INTERNAL, CONFIDENTIAL, RESTRICTED
+        positive_only: If True, return only positive (matched) findings.
+            If False, return only negative findings. Default returns both.
+        page_size: Number of findings to return per page
+        page_cursor: Pagination cursor from a previous response
+    """
+    client = get_api_client()
+    workspace_id = config.get("workspace_id")
+
+    if not workspace_id:
+        return {"error": True, "message": "Workspace ID not configured"}
+
+    try:
+        # Resolve table name to ID
+        table_result = await client.search_tables(
+            workspace_id=workspace_id,
+            table_name=table_name,
+            schema_names=[schema_name] if schema_name else None,
+        )
+        tables = table_result.get("tables", [])
+        if not tables:
+            return {"error": True, "message": f"Table '{table_name}' not found"}
+
+        if len(tables) > 1 and not schema_name:
+            return {
+                "error": True,
+                "message": f"Multiple tables found matching '{table_name}'. Please specify schema_name to narrow results.",
+                "tables": [
+                    {
+                        "name": t.get("name"),
+                        "schema": t.get("schemaName"),
+                        "id": t.get("id"),
+                    }
+                    for t in tables[:10]
+                ],
+            }
+
+        table = tables[0]
+        table_id = table.get("id")
+        table_display = f"{table.get('schemaName', '')}.{table.get('name', table_name)}"
+
+        # Normalize sensitivity filter values
+        normalized_sensitivities = None
+        if sensitivities:
+            normalized_sensitivities = [
+                s if s.startswith("DATA_SENSITIVITY_") else f"DATA_SENSITIVITY_{s.upper()}"
+                for s in sensitivities
+            ]
+
+        if finding_type == "snapshot":
+            result = await client.get_sds_snapshot_findings(
+                workspace_id=int(workspace_id),
+                table_ids=[table_id],
+                sensitivities=normalized_sensitivities,
+                positive_only=positive_only,
+                page_size=page_size,
+                page_cursor=page_cursor,
+            )
+        else:
+            result = await client.get_sds_aggregate_findings(
+                workspace_id=int(workspace_id),
+                table_ids=[table_id],
+                sensitivities=normalized_sensitivities,
+                positive_only=positive_only,
+                page_size=page_size,
+                page_cursor=page_cursor,
+            )
+
+        if isinstance(result, dict) and result.get("error"):
+            return {
+                "error": True,
+                "message": f"API error: {result.get('message', 'Unknown error')}",
+            }
+
+        findings = result.get("findings", [])
+        pagination = result.get("paginationInfo", {})
+
+        return {
+            "table": table_display,
+            "table_id": table_id,
+            "finding_type": finding_type,
+            "total_findings": len(findings),
+            "findings": findings,
+            "pagination_info": pagination,
+        }
+
+    except Exception as e:
+        return {"error": True, "message": f"Error fetching sensitivity findings: {str(e)}"}
+
+
 # Run the server if executed directly
 if __name__ == "__main__":
     mcp.run()
