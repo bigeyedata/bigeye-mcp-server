@@ -52,9 +52,10 @@
 
 ### Sensitive Data Scanning Tools
 
-11. ~~**list_data_classes, get_scan_findings**~~ ✅ Implemented
+11. ~~**list_data_classes, get_table_sensitivity_findings, get_scan_findings**~~ ✅ Implemented
    - list_data_classes: fetches data classification categories with sensitivity levels
-   - get_scan_findings: fetches column-level classification scan results (aggregate findings)
+   - get_table_sensitivity_findings: name-based lookup with auto table resolution, supports aggregate + snapshot findings
+   - get_scan_findings: lower-level ID-based query across multiple tables/columns, supports aggregate + snapshot findings
    - Supports: filtering by sensitivity, data class, table/column IDs, positive-only findings
    - Includes: pagination, search filtering
 

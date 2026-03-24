@@ -1877,3 +1877,56 @@ class BigeyeAPIClient:
             method="POST",
             json_data=payload,
         )
+
+    async def fetch_snapshot_findings(
+        self,
+        workspace_id: int,
+        table_ids: Optional[List[int]] = None,
+        column_ids: Optional[List[int]] = None,
+        schema_ids: Optional[List[int]] = None,
+        source_ids: Optional[List[int]] = None,
+        scan_job_ids: Optional[List[int]] = None,
+        scan_run_ids: Optional[List[int]] = None,
+        classifier_ids: Optional[List[int]] = None,
+        data_class_ids: Optional[List[int]] = None,
+        sensitivities: Optional[List[str]] = None,
+        positive_or_negative_findings: Optional[str] = None,
+        page_size: Optional[int] = None,
+        page_cursor: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """Fetch snapshot scan findings via POST /api/v1/sds/scan-job/findings/snapshot.
+
+        Unlike aggregate findings (current state across all runs), snapshot findings
+        show results from specific scan runs.
+        """
+        payload: Dict[str, Any] = {"workspaceId": workspace_id}
+        if table_ids:
+            payload["tableIds"] = table_ids
+        if column_ids:
+            payload["columnIds"] = column_ids
+        if schema_ids:
+            payload["schemaIds"] = schema_ids
+        if source_ids:
+            payload["sourceIds"] = source_ids
+        if scan_job_ids:
+            payload["scanJobIds"] = scan_job_ids
+        if scan_run_ids:
+            payload["scanRunIds"] = scan_run_ids
+        if classifier_ids:
+            payload["classifierIds"] = classifier_ids
+        if data_class_ids:
+            payload["dataClassIds"] = data_class_ids
+        if sensitivities:
+            payload["sensitivities"] = sensitivities
+        if positive_or_negative_findings:
+            payload["positiveOrNegativeFindings"] = positive_or_negative_findings
+        if page_size is not None:
+            payload["pageSize"] = page_size
+        if page_cursor:
+            payload["pageCursor"] = page_cursor
+
+        return await self.make_request(
+            "/api/v1/sds/scan-job/findings/snapshot",
+            method="POST",
+            json_data=payload,
+        )

@@ -3707,25 +3707,124 @@ async def list_data_classes(
 
 
 @mcp.tool()
+async def get_table_sensitivity_findings(
+    table_name: str,
+    schema_name: Optional[str] = None,
+    finding_type: str = "aggregate",
+    sensitivities: Optional[List[str]] = None,
+    positive_only: Optional[bool] = None,
+    page_size: Optional[int] = None,
+    page_cursor: Optional[str] = None,
+) -> Dict[str, Any]:
+    """Get sensitive data scan findings for a specific table by name.
+
+    Resolves the table name, then fetches sensitivity findings from Bigeye's
+    Sensitive Data Scanning (SDS) feature showing which columns contain PII
+    or sensitive data and what data classes were detected.
+
+    Args:
+        table_name: Name of the table to get sensitivity findings for
+        schema_name: Optional schema name to narrow the table search
+        finding_type: Either "aggregate" (all-time summary, default) or "snapshot"
+            (findings from a specific scan run)
+        sensitivities: Optional list of sensitivity levels to filter by.
+            Valid values: PUBLIC, INTERNAL, CONFIDENTIAL, RESTRICTED
+        positive_only: If True, return only positive (matched) findings.
+            If False, return only negative findings. Default returns both.
+        page_size: Number of findings to return per page
+        page_cursor: Pagination cursor from a previous response
+    """
+    client = get_api_client()
+    workspace_id = config.get("workspace_id")
+
+    if not workspace_id:
+        return {"error": True, "message": "Workspace ID not configured"}
+
+    try:
+        table = await _resolve_table(client, workspace_id, table_name, schema_name)
+        if table.get("error"):
+            return table
+
+        table_id = table["id"]
+        table_display = f"{table.get('schemaName', '')}.{table.get('name', table_name)}"
+
+        # Normalize sensitivity filter values (accept short forms like "RESTRICTED")
+        normalized_sensitivities = None
+        if sensitivities:
+            normalized_sensitivities = [
+                s if s.startswith("DATA_SENSITIVITY_") else f"DATA_SENSITIVITY_{s.upper()}"
+                for s in sensitivities
+            ]
+
+        positive_or_negative = None
+        if positive_only is True:
+            positive_or_negative = "TRUE"
+        elif positive_only is False:
+            positive_or_negative = "FALSE"
+
+        if finding_type == "snapshot":
+            result = await client.fetch_snapshot_findings(
+                workspace_id=int(workspace_id),
+                table_ids=[table_id],
+                sensitivities=normalized_sensitivities,
+                positive_or_negative_findings=positive_or_negative,
+                page_size=page_size,
+                page_cursor=page_cursor,
+            )
+        else:
+            result = await client.fetch_scan_findings(
+                workspace_id=int(workspace_id),
+                table_ids=[table_id],
+                sensitivities=normalized_sensitivities,
+                positive_or_negative_findings=positive_or_negative,
+                page_size=page_size,
+                page_cursor=page_cursor,
+            )
+
+        if isinstance(result, dict) and result.get("error"):
+            return {
+                "error": True,
+                "message": f"API error: {result.get('message', 'Unknown error')}",
+            }
+
+        findings = result.get("findings", [])
+        pagination = result.get("paginationInfo", {})
+
+        response: Dict[str, Any] = {
+            "table": table_display,
+            "table_id": table_id,
+            "finding_type": finding_type,
+            "total_findings": len(findings),
+            "findings": findings,
+        }
+        if pagination and pagination.get("nextCursor"):
+            response["next_page_cursor"] = pagination["nextCursor"]
+        return response
+
+    except Exception as e:
+        return {"error": True, "message": f"Error fetching sensitivity findings: {str(e)}"}
+
+
+@mcp.tool()
 async def get_scan_findings(
     table_ids: Optional[List[int]] = None,
     column_ids: Optional[List[int]] = None,
     data_class_ids: Optional[List[int]] = None,
     sensitivities: Optional[List[str]] = None,
     positive_only: bool = False,
+    finding_type: str = "aggregate",
     search: Optional[str] = None,
     page_size: Optional[int] = None,
     page_cursor: Optional[str] = None,
 ) -> Dict[str, Any]:
-    """Get data classification scan findings from Bigeye.
+    """Get data classification scan findings from Bigeye using raw IDs.
 
-    Returns column-level classification results showing which columns contain
-    sensitive data (PII, PHI, financial data, etc.) based on Bigeye's classification scans.
-    Uses aggregate findings (current state across all scan runs).
+    Lower-level tool for querying findings across multiple tables/columns by ID.
+    For a single table by name, prefer get_table_sensitivity_findings instead.
 
     Args:
-        table_ids: Optional list of Bigeye table IDs to filter findings for specific tables
-        column_ids: Optional list of Bigeye column IDs to filter findings for specific columns
+        table_ids: Optional list of Bigeye table IDs to filter findings
+        column_ids: Optional list of Bigeye column IDs to filter findings
         data_class_ids: Optional list of data class IDs to filter by classification type
         sensitivities: Optional list of sensitivity levels to filter by. Possible values:
             - DATA_SENSITIVITY_PUBLIC
@@ -3734,13 +3833,11 @@ async def get_scan_findings(
             - DATA_SENSITIVITY_RESTRICTED
         positive_only: If true, only return findings where sensitive data was detected.
             If false (default), return both positive and negative findings.
+        finding_type: Either "aggregate" (all-time summary, default) or "snapshot"
+            (findings from a specific scan run)
         search: Optional search string to filter results
         page_size: Optional number of results per page
         page_cursor: Cursor for pagination
-
-    Returns:
-        Dictionary containing scan findings with column, data class, sensitivity,
-        rows scanned/matched, and scan metadata for each finding
     """
     client = get_api_client()
     workspace_id = config.get("workspace_id")
@@ -3754,22 +3851,30 @@ async def get_scan_findings(
     positive_or_negative = "TRUE" if positive_only else None
 
     try:
-        debug_print(
-            f"Fetching scan findings (table_ids={table_ids}, column_ids={column_ids}, "
-            f"data_class_ids={data_class_ids}, sensitivities={sensitivities}, "
-            f"positive_only={positive_only})"
-        )
-        result = await client.fetch_scan_findings(
-            workspace_id=workspace_id,
-            table_ids=table_ids,
-            column_ids=column_ids,
-            data_class_ids=data_class_ids,
-            sensitivities=sensitivities,
-            positive_or_negative_findings=positive_or_negative,
-            search=search,
-            page_size=page_size,
-            page_cursor=page_cursor,
-        )
+        if finding_type == "snapshot":
+            result = await client.fetch_snapshot_findings(
+                workspace_id=workspace_id,
+                table_ids=table_ids,
+                column_ids=column_ids,
+                data_class_ids=data_class_ids,
+                sensitivities=sensitivities,
+                positive_or_negative_findings=positive_or_negative,
+                page_size=page_size,
+                page_cursor=page_cursor,
+            )
+        else:
+            result = await client.fetch_scan_findings(
+                workspace_id=workspace_id,
+                table_ids=table_ids,
+                column_ids=column_ids,
+                data_class_ids=data_class_ids,
+                sensitivities=sensitivities,
+                positive_or_negative_findings=positive_or_negative,
+                search=search,
+                page_size=page_size,
+                page_cursor=page_cursor,
+            )
+
         if isinstance(result, dict) and result.get("error"):
             return {
                 "error": f"API error (status {result.get('status_code', 'unknown')}): {result.get('message', 'Unknown error')}",
