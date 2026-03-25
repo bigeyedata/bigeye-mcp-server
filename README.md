@@ -162,11 +162,10 @@ To connect to multiple Bigeye instances (e.g. demo and production), create separ
 - **`create_profile_job`** — Queue a new data profiling job for a table
 - **`get_profile_job_status`** — Check the status of a profiling job
 
-### Catalog Search
+### Sensitive Data Scanning
 
-- **`search_schemas`** — Search for schemas by name (partial matching)
-- **`search_tables`** — Search for tables by exact or partial name match
-- **`search_columns`** — Search for columns by name (partial matching)
+- **`list_data_classes`** — List data classification categories (e.g., "Email Address", "US SSN") with sensitivity levels
+- **`get_scan_findings`** — Get column-level classification scan results showing where sensitive data was detected
 
 ### Data Lineage
 

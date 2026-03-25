@@ -268,30 +268,6 @@ mcp = FastMCP(
     Example: "Show me active issues" → Use resource bigeye://issues/active
     Example: "Show issues for schema X" → Use list_issues() tool with filters
 
-    IMPORTANT: Table and Column Search Workflow
-    ============================================
-    When a user asks about a specific table, column, or schema by name:
-
-    1. ALWAYS search first using the appropriate search tool:
-       - Use search_tables() when asked about a table
-       - Use search_columns() when asked about a column
-       - Use search_schemas() when asked about a schema
-
-    2. Present the search results to the user as a numbered list, showing:
-       - Full qualified name (e.g., ORACLE.PROD_SCHEMA.ORDERS)
-       - Database system it belongs to
-       - Any relevant metadata (row count, column count, etc.)
-
-    3. Ask the user to confirm which specific object they meant by number or name
-
-    4. Only after the user confirms the specific object should you proceed with
-       the rest of their request (checking health, analyzing issues, etc.)
-
-    5. ALWAYS refer to tables and columns by their FULL QUALIFIED NAME in all
-       communications with the user. Never say just "the ORDERS table" - say
-       "the ORACLE.PROD_SCHEMA.ORDERS table" to be clear about which database
-       system it belongs to.
-
     KNOWLEDGEBASE SERVER
     ====================
     If a bigeye-knowledgebase MCP server is also available, prefer its search tools for
@@ -303,45 +279,17 @@ mcp = FastMCP(
     Use THIS server for everything else: quality reports, monitoring, issues, lineage
     analysis, actions, agent tracking, profiling, and dimension management.
 
-    If the knowledgebase tools are not available, fall back to this server's search tools
-    (search_tables, search_columns, search_schemas).
-
-    IMPORTANT: Understanding Issue and Incident References
-    =======================================================
-    Issues and incidents have TWO different identifiers - understanding the distinction is CRITICAL:
+    IMPORTANT: Issue ID vs Display Name
+    =====================================
+    Issues and incidents have TWO different identifiers:
 
     1. 'id' field - Internal database ID (e.g., 12345, 67890)
-       - This is the internal system identifier
-       - Users typically DON'T know this number
        - Used for API operations like create_incident(), update_issue(), etc.
-       - DO NOT use this when users reference an issue by number
 
-    2. 'name' field - Display name/reference (e.g., "10921", "data-quality-alert")
+    2. 'name' field - Display name/reference (e.g., "10921", "TU-7573")
        - This is what users see in the Bigeye UI
-       - This is what users will reference in conversations
-       - When a user says "incident 10921" or "issue 10921", they mean THIS field
-
-    WORKFLOW for Issue/Incident References:
-    ----------------------------------------
-    When a user mentions an issue or incident by number or name:
-
-    1. ALWAYS use search_issues() to find the issue
-       Example: User says "Show me incident 10921"
-       → Use search_issues(name_query="10921")
-
-    2. DO NOT try to use the number as an 'id' parameter in other tools
-       ❌ WRONG: list_related_issues(starting_issue_id=10921)
-       ✓ CORRECT: search_issues(name_query="10921") first,
-                  then use the returned 'id' field if needed
-
-    3. Present search results if multiple matches are found
-       - Show the issue name, status, description, and affected tables
-       - Ask user to confirm if needed
-
-    4. Only after finding the correct issue, use its 'id' field for other operations
-       - The 'id' from the search result can be used with list_related_issues()
-       - The 'id' from the search result can be used with update_issue()
-       - The 'id' from the search result can be used with create_incident()
+       - When a user references an issue by number, they mean this field
+       - Use search_issues(name_query="10921") to resolve the display name to an internal ID
 
     Example interaction:
     User: "Check the health of the orders table"
@@ -360,6 +308,77 @@ def debug_print(message: str):
     """Print debug messages to stderr"""
     if config["debug"] or os.environ.get("BIGEYE_DEBUG", "false").lower() in ["true", "1", "yes"]:
         print(f"[BIGEYE MCP DEBUG] {message}", file=sys.stderr)
+
+
+async def _resolve_table(
+    client: BigeyeAPIClient,
+    workspace_id: int,
+    table_name: str,
+    schema_name: Optional[str] = None,
+    include_columns: bool = False,
+) -> Dict[str, Any]:
+    """Resolve a table by name, handling case-insensitivity and the DATABASE.SCHEMA quirk.
+
+    Bigeye stores schema names as DATABASE.SCHEMA (e.g. TOOY_DEMO_V2.PROD_REPL).
+    Callers often pass just the schema portion (e.g. "prod_repl") or use the wrong
+    case.  This helper tries:
+      1. Exact search with the provided schema_name (uppercased).
+      2. If no results and schema_name has no dot, retry without the schema filter
+         and match client-side using a suffix match on schemaName.
+      3. If still no results, retry with just the table name (no schema filter).
+
+    Returns the first matching table dict, or an error dict with 'error' key.
+    """
+    uc_table = table_name.upper()
+    uc_schema = schema_name.upper() if schema_name else None
+
+    # Attempt 1: search with both filters
+    result = await client.search_tables(
+        workspace_id=workspace_id,
+        table_name=uc_table,
+        schema_names=[uc_schema] if uc_schema else None,
+        include_columns=include_columns,
+    )
+    tables = result.get("tables", [])
+
+    # Attempt 2: if schema was provided but has no dot, it's probably just the
+    # schema portion — retry without schema filter and match client-side.
+    if not tables and uc_schema and "." not in uc_schema:
+        debug_print(
+            f"No results for table={uc_table} schema={uc_schema}; "
+            "retrying without schema filter (suffix match)"
+        )
+        result = await client.search_tables(
+            workspace_id=workspace_id,
+            table_name=uc_table,
+            include_columns=include_columns,
+        )
+        tables = [
+            t for t in result.get("tables", [])
+            if (t.get("schemaName") or "").upper().endswith(uc_schema)
+        ]
+
+    # Attempt 3: last resort — just table name, no schema
+    if not tables and uc_schema:
+        debug_print(
+            f"Still no results; retrying with just table_name={uc_table}"
+        )
+        result = await client.search_tables(
+            workspace_id=workspace_id,
+            table_name=uc_table,
+            include_columns=include_columns,
+        )
+        tables = result.get("tables", [])
+
+    if not tables:
+        return {"error": True, "message": f"Table '{table_name}' not found in Bigeye catalog"}
+
+    table = tables[0]
+    if not table.get("id"):
+        return {"error": True, "message": f"Table '{table_name}' found but has no ID"}
+
+    return table
+
 
 # Initialize clients
 auth_client = BigeyeAuthClient()
@@ -1177,18 +1196,11 @@ async def list_table_metrics(
 
     try:
         # Resolve table name → table ID (GET /api/v1/metrics requires tableIds, not tableName)
-        table_result = await client.search_tables(
-            workspace_id=workspace_id,
-            table_name=table_name,
-            schema_names=[schema_name] if schema_name else None,
-        )
-        tables = table_result.get("tables", [])
-        if not tables:
-            return {"error": True, "message": f"Table '{table_name}' not found in Bigeye catalog"}
+        table = await _resolve_table(client, workspace_id, table_name, schema_name)
+        if table.get("error"):
+            return table
 
-        table_id = tables[0].get("id")
-        if not table_id:
-            return {"error": True, "message": f"Table '{table_name}' found but has no ID"}
+        table_id = table["id"]
 
         result = await client.get_table_metrics(
             workspace_id=workspace_id,
@@ -2124,7 +2136,7 @@ async def search_lineage_nodes(
     node_type: Optional[str] = None,
     limit: int = 20
 ) -> Dict[str, Any]:
-    """Find lineage node IDs by path pattern (e.g. 'WAREHOUSE/SCHEMA/TABLE'). Supports wildcards ('*/*/ORDERS'). Best for: getting a node_id required by get_lineage_graph, get_downstream_impact, and other lineage tools. Not for general table discovery — use search_tables for that.
+    """Find lineage node IDs by path pattern (e.g. 'WAREHOUSE/SCHEMA/TABLE'). Supports wildcards ('*/*/ORDERS'). Best for: getting a node_id required by get_lineage_graph, get_downstream_impact, and other lineage tools.
 
     Args:
         workspace_id: Optional Bigeye workspace ID. If not provided, uses the configured workspace.
@@ -2434,147 +2446,6 @@ async def lineage_delete_node(
             "message": f"Error deleting lineage node: {str(e)}"
         }
 
-@mcp.tool()
-async def search_schemas(
-    schema_name: Optional[str] = None,
-    warehouse_names: Optional[List[str]] = None
-) -> Dict[str, Any]:
-    """Search for schemas by name (supports partial matching). Returns matching schemas with table counts. Optionally filter by warehouse. For browsing schemas with table counts, prefer list_schemas (knowledgebase).
-
-    Args:
-        schema_name: Optional schema name to search for (supports partial matching)
-        warehouse_names: Optional list of warehouse names to filter by
-    """
-    client = get_api_client()
-    workspace_id = config.get('workspace_id')
-    
-    if not workspace_id:
-        return {
-            'error': 'Workspace ID not configured',
-            'hint': 'Check your Claude Desktop configuration for BIGEYE_WORKSPACE_ID'
-        }
-    
-    debug_print(f"Searching for schemas: name='{schema_name}', warehouses={warehouse_names}")
-    
-    try:
-        result = await client.search_schemas(
-            workspace_id=workspace_id,
-            schema_name=schema_name,
-            warehouse_ids=None  # TODO: Convert warehouse names to IDs if needed
-        )
-        
-        if result.get("error"):
-            return result
-            
-        schemas = result.get("schemas", [])
-        
-        return {
-            "total_results": len(schemas),
-            "schemas": [
-                {
-                    "id": schema.get("id"),
-                    "name": schema.get("name"),
-                    "warehouse": schema.get("warehouseName"),
-                    "table_count": schema.get("tableCount", 0)
-                }
-                for schema in schemas
-            ]
-        }
-        
-    except Exception as e:
-        return {
-            "error": True,
-            "message": f"Error searching schemas: {str(e)}"
-        }
-
-@mcp.tool()
-async def search_tables(
-    table_name: Optional[str] = None,
-    schema_names: Optional[List[str]] = None,
-    warehouse_names: Optional[List[str]] = None,
-    include_columns: bool = False
-) -> Dict[str, Any]:
-    """Search the Bigeye catalog for tables by exact or partial name match. Best for: finding a specific table when you know its name. Returns full qualified names, row counts, column counts. For natural language/conceptual queries, use search_metadata (knowledgebase) instead. After resolving a table, use list_table_metrics for monitor details or get_table_dimension_coverage for coverage gap analysis.
-
-    Args:
-        table_name: Optional table name to search for (supports partial matching)
-        schema_names: Optional list of schema names to filter by
-        warehouse_names: Optional list of warehouse names to filter by
-        include_columns: Whether to include column information in the response
-    """
-    client = get_api_client()
-    workspace_id = config.get('workspace_id')
-    
-    if not workspace_id:
-        return {
-            'error': 'Workspace ID not configured',
-            'hint': 'Check your Claude Desktop configuration for BIGEYE_WORKSPACE_ID'
-        }
-    
-    debug_print(f"Searching for tables: name='{table_name}', schemas={schema_names}, warehouses={warehouse_names}")
-    
-    try:
-        result = await client.search_tables(
-            workspace_id=workspace_id,
-            table_name=table_name,
-            schema_names=schema_names,
-            warehouse_ids=None,  # TODO: Convert warehouse names to IDs if needed
-            include_columns=include_columns
-        )
-        
-        if result.get("error"):
-            return result
-            
-        tables = result.get("tables", [])
-        
-        formatted_tables = []
-        for table in tables:
-            # Build the full qualified name
-            warehouse = table.get("warehouseName", "")
-            database = table.get("databaseName", "")
-            schema = table.get("schemaName", "")
-            name = table.get("name", "")
-            
-            # Create full qualified name (warehouse.database.schema.table or database.schema.table)
-            full_parts = [p for p in [warehouse, database, schema, name] if p]
-            full_qualified_name = ".".join(full_parts)
-            
-            formatted_table = {
-                "id": table.get("id"),
-                "name": name,
-                "schema": schema,
-                "database": database,
-                "warehouse": warehouse,
-                "full_qualified_name": full_qualified_name,
-                "display_name": f"{full_qualified_name} (in {warehouse or database} database)",
-                "row_count": table.get("rowCount"),
-                "last_updated": table.get("lastUpdatedAt"),
-                "USE_THIS_NAME": full_qualified_name  # Emphasized field for Claude
-            }
-            
-            if include_columns and table.get("columns"):
-                formatted_table["columns"] = [
-                    {
-                        "id": col.get("id"),
-                        "name": col.get("name"),
-                        "type": col.get("type"),
-                        "nullable": col.get("isNullable", True)
-                    }
-                    for col in table.get("columns", [])
-                ]
-                
-            formatted_tables.append(formatted_table)
-        
-        return {
-            "total_results": len(formatted_tables),
-            "tables": formatted_tables
-        }
-        
-    except Exception as e:
-        return {
-            "error": True,
-            "message": f"Error searching tables: {str(e)}"
-        }
 
 @mcp.tool()
 async def list_report_upstream_issues(
@@ -2707,83 +2578,6 @@ async def get_profile_job_status(
             "message": f"Error getting profile workflow status for table {table_id}: {str(e)}"
         }
 
-@mcp.tool()
-async def search_columns(
-    column_name: Optional[str] = None,
-    table_names: Optional[List[str]] = None,
-    schema_names: Optional[List[str]] = None,
-    warehouse_names: Optional[List[str]] = None
-) -> Dict[str, Any]:
-    """Search for columns by name (supports partial matching). Returns matching columns with full qualified names. Optionally filter by table, schema, or warehouse. For semantic/conceptual column discovery, prefer search_metadata (knowledgebase).
-
-    Args:
-        column_name: Optional column name to search for (supports partial matching)
-        table_names: Optional list of table names to filter by
-        schema_names: Optional list of schema names to filter by
-        warehouse_names: Optional list of warehouse names to filter by
-    """
-    client = get_api_client()
-    workspace_id = config.get('workspace_id')
-    
-    if not workspace_id:
-        return {
-            'error': 'Workspace ID not configured',
-            'hint': 'Check your Claude Desktop configuration for BIGEYE_WORKSPACE_ID'
-        }
-    
-    debug_print(f"Searching for columns: name='{column_name}', tables={table_names}, schemas={schema_names}")
-    
-    try:
-        result = await client.search_columns(
-            workspace_id=workspace_id,
-            column_name=column_name,
-            table_names=table_names,
-            schema_names=schema_names,
-            warehouse_ids=None  # TODO: Convert warehouse names to IDs if needed
-        )
-        
-        if result.get("error"):
-            return result
-            
-        columns = result.get("columns", [])
-        
-        formatted_columns = []
-        for column in columns:
-            # Build the full qualified name
-            warehouse = column.get("warehouseName", "")
-            database = column.get("databaseName", "")
-            schema = column.get("schemaName", "")
-            table = column.get("tableName", "")
-            name = column.get("name", "")
-            
-            # Create full qualified name for the column
-            full_parts = [p for p in [warehouse, database, schema, table, name] if p]
-            full_qualified_name = ".".join(full_parts)
-            
-            formatted_columns.append({
-                "id": column.get("id"),
-                "name": name,
-                "table": table,
-                "schema": schema,
-                "database": database,
-                "warehouse": warehouse,
-                "type": column.get("type"),
-                "nullable": column.get("isNullable", True),
-                "full_qualified_name": full_qualified_name,
-                "display_name": f"{full_qualified_name} (in {warehouse or database} database)",
-                "USE_THIS_NAME": full_qualified_name  # Emphasized field for Claude
-            })
-        
-        return {
-            "total_results": len(formatted_columns),
-            "columns": formatted_columns
-        }
-        
-    except Exception as e:
-        return {
-            "error": True,
-            "message": f"Error searching columns: {str(e)}"
-        }
 
 @mcp.tool()
 async def list_dimensions() -> Dict[str, Any]:
@@ -2995,14 +2789,14 @@ async def create_metric(
     Column-level metrics (e.g. PERCENT_NULL, COUNT_DISTINCT) require column_name.
     Table-level metrics (e.g. COUNT_ROWS, FRESHNESS) must NOT have column_name.
 
-    Prefer passing table_id (from search_tables) for reliable lookups. Falls back to name-based search if table_id is not provided.
+    Prefer passing table_id for reliable lookups. Falls back to name-based search if table_id is not provided.
 
     Args:
         table_name: Name of the table to create the metric on
         metric_type: Predefined metric type (e.g. COUNT_ROWS, PERCENT_NULL, FRESHNESS)
         column_name: Column to monitor (required for column-level metrics, omit for table-level)
         schema_name: Optional schema name to disambiguate table search
-        table_id: Table ID from search_tables — preferred, avoids ambiguous name lookups
+        table_id: Table ID — preferred, avoids ambiguous name lookups
         name: Optional display name for the metric
         description: Optional description for the metric
         lookback_type: Optional lookback type — DATA_TIME, CLOCK_TIME, or METRIC_TIME
@@ -3285,19 +3079,17 @@ async def _compute_dimension_coverage(
                 table_ids=[table_id],
                 include_columns=True,
             )
+            tables = table_result.get("tables", []) if isinstance(table_result, dict) else []
+            if not tables:
+                return {"error": f"Table ID {table_id} not found"}
+            table = tables[0]
         else:
-            table_result = await client.search_tables(
-                workspace_id=workspace_id,
-                table_name=table_name,
-                schema_names=[schema_name] if schema_name else None,
-                include_columns=True,
+            table = await _resolve_table(
+                client, workspace_id, table_name, schema_name, include_columns=True,
             )
-        tables = table_result.get("tables", []) if isinstance(table_result, dict) else []
-        if not tables:
-            identifier = f"ID {table_id}" if table_id else f"'{table_name}'"
-            return {"error": f"Table {identifier} not found"}
+            if table.get("error"):
+                return table
 
-        table = tables[0]
         columns = table.get("columns", [])
 
         # If column_names filter is provided, validate and filter
@@ -3497,12 +3289,12 @@ async def get_table_dimension_coverage(
 ) -> Dict[str, Any]:
     """Analyze which data quality dimensions are covered by monitors on a table and which have gaps. Automatically joins the workspace's dimension taxonomy, the table's column metadata, and existing metrics to produce: per-column coverage, table-level coverage, an aggregate score, and a prioritized gap list with suggested metric types. This is the recommended single-call tool for answering 'what monitoring is missing on this table?'
 
-    Prefer passing table_id (from search_tables) for reliable lookups. Falls back to name-based search if table_id is not provided.
+    Prefer passing table_id for reliable lookups. Falls back to name-based search if table_id is not provided.
 
     Args:
         table_name: Table name to analyze (used as fallback if table_id not provided)
         schema_name: Optional schema name to narrow name-based search
-        table_id: Table ID from search_tables — preferred, avoids ambiguous name lookups
+        table_id: Table ID — preferred, avoids ambiguous name lookups
     """
     if not table_id and not table_name:
         return {"error": "Either table_id or table_name is required"}
@@ -3518,13 +3310,13 @@ async def get_column_dimension_coverage(
 ) -> Dict[str, Any]:
     """Analyze dimension coverage for specific columns in a table. Same analysis as get_table_dimension_coverage but filtered to the requested columns. Use this when you already know which columns to investigate — for example, after identifying columns with issues or when a user asks about specific fields. Always includes table-level dimension coverage for context.
 
-    Prefer passing table_id (from search_tables) for reliable lookups. Falls back to name-based search if table_id is not provided.
+    Prefer passing table_id for reliable lookups. Falls back to name-based search if table_id is not provided.
 
     Args:
         table_name: Table name to analyze (used as fallback if table_id not provided)
         column_names: List of column names to analyze coverage for
         schema_name: Optional schema name to narrow name-based search
-        table_id: Table ID from search_tables — preferred, avoids ambiguous name lookups
+        table_id: Table ID — preferred, avoids ambiguous name lookups
     """
     if not table_id and not table_name:
         return {"error": "Either table_id or table_name is required"}
@@ -3837,6 +3629,286 @@ async def list_entity_tags(
 
     except Exception as e:
         return {"error": True, "message": f"Error listing entity tags: {str(e)}"}
+
+
+@mcp.tool()
+async def list_data_classes(
+    search: Optional[str] = None,
+    sensitivities: Optional[List[str]] = None,
+    page_size: Optional[int] = None,
+    page_cursor: Optional[str] = None,
+) -> Dict[str, Any]:
+    """List data classification categories configured in Bigeye.
+
+    Returns data classes (e.g., "Email Address", "Credit Card", "US SSN") with their
+    sensitivity levels (PUBLIC, INTERNAL, CONFIDENTIAL, RESTRICTED).
+
+    Args:
+        search: Optional search string to filter data classes by name
+        sensitivities: Optional list of sensitivity levels to filter by. Possible values:
+            - DATA_SENSITIVITY_PUBLIC
+            - DATA_SENSITIVITY_INTERNAL
+            - DATA_SENSITIVITY_CONFIDENTIAL
+            - DATA_SENSITIVITY_RESTRICTED
+        page_size: Optional number of results per page
+        page_cursor: Cursor for pagination
+
+    Returns:
+        Dictionary containing data classes with their names, sensitivity levels, and descriptions
+    """
+    client = get_api_client()
+    workspace_id = config.get("workspace_id")
+
+    if not workspace_id:
+        return {
+            "error": "Workspace ID not configured",
+            "hint": "Check your Claude Desktop configuration for BIGEYE_WORKSPACE_ID",
+        }
+
+    try:
+        debug_print(f"Fetching data classes (search={search}, sensitivities={sensitivities})")
+        result = await client.fetch_data_classes(
+            workspace_id=workspace_id,
+            search=search,
+            sensitivities=sensitivities,
+            page_size=page_size,
+            page_cursor=page_cursor,
+        )
+        if isinstance(result, dict) and result.get("error"):
+            return {
+                "error": f"API error (status {result.get('status_code', 'unknown')}): {result.get('message', 'Unknown error')}",
+            }
+
+        data_classes = result.get("dataClasses", [])
+        formatted = [
+            {
+                "id": dc.get("id"),
+                "name": dc.get("name"),
+                "sensitivity": dc.get("sensitivity"),
+                "description": dc.get("description"),
+                "color_hex": dc.get("colorHex"),
+                "provided_by_bigeye": dc.get("providedByBigeye"),
+                "number_of_classifiers": dc.get("numberOfClassifiers"),
+            }
+            for dc in data_classes
+        ]
+
+        response: Dict[str, Any] = {
+            "total_returned": len(formatted),
+            "data_classes": formatted,
+        }
+        pagination = result.get("paginationInfo")
+        if pagination and pagination.get("nextCursor"):
+            response["next_page_cursor"] = pagination["nextCursor"]
+        return response
+
+    except Exception as e:
+        return {"error": True, "message": f"Error listing data classes: {str(e)}"}
+
+
+@mcp.tool()
+async def get_table_sensitivity_findings(
+    table_name: str,
+    schema_name: Optional[str] = None,
+    finding_type: str = "aggregate",
+    sensitivities: Optional[List[str]] = None,
+    positive_only: Optional[bool] = None,
+    page_size: Optional[int] = None,
+    page_cursor: Optional[str] = None,
+) -> Dict[str, Any]:
+    """Get sensitive data scan findings for a specific table by name.
+
+    Resolves the table name, then fetches sensitivity findings from Bigeye's
+    Sensitive Data Scanning (SDS) feature showing which columns contain PII
+    or sensitive data and what data classes were detected.
+
+    Args:
+        table_name: Name of the table to get sensitivity findings for
+        schema_name: Optional schema name to narrow the table search
+        finding_type: Either "aggregate" (all-time summary, default) or "snapshot"
+            (findings from a specific scan run)
+        sensitivities: Optional list of sensitivity levels to filter by.
+            Valid values: PUBLIC, INTERNAL, CONFIDENTIAL, RESTRICTED
+        positive_only: If True, return only positive (matched) findings.
+            If False, return only negative findings. Default returns both.
+        page_size: Number of findings to return per page
+        page_cursor: Pagination cursor from a previous response
+    """
+    client = get_api_client()
+    workspace_id = config.get("workspace_id")
+
+    if not workspace_id:
+        return {"error": True, "message": "Workspace ID not configured"}
+
+    try:
+        table = await _resolve_table(client, workspace_id, table_name, schema_name)
+        if table.get("error"):
+            return table
+
+        table_id = table["id"]
+        table_display = f"{table.get('schemaName', '')}.{table.get('name', table_name)}"
+
+        # Normalize sensitivity filter values (accept short forms like "RESTRICTED")
+        normalized_sensitivities = None
+        if sensitivities:
+            normalized_sensitivities = [
+                s if s.startswith("DATA_SENSITIVITY_") else f"DATA_SENSITIVITY_{s.upper()}"
+                for s in sensitivities
+            ]
+
+        positive_or_negative = None
+        if positive_only is True:
+            positive_or_negative = "TRUE"
+        elif positive_only is False:
+            positive_or_negative = "FALSE"
+
+        if finding_type == "snapshot":
+            result = await client.fetch_snapshot_findings(
+                workspace_id=int(workspace_id),
+                table_ids=[table_id],
+                sensitivities=normalized_sensitivities,
+                positive_or_negative_findings=positive_or_negative,
+                page_size=page_size,
+                page_cursor=page_cursor,
+            )
+        else:
+            result = await client.fetch_scan_findings(
+                workspace_id=int(workspace_id),
+                table_ids=[table_id],
+                sensitivities=normalized_sensitivities,
+                positive_or_negative_findings=positive_or_negative,
+                page_size=page_size,
+                page_cursor=page_cursor,
+            )
+
+        if isinstance(result, dict) and result.get("error"):
+            return {
+                "error": True,
+                "message": f"API error: {result.get('message', 'Unknown error')}",
+            }
+
+        findings = result.get("findings", [])
+        pagination = result.get("paginationInfo", {})
+
+        response: Dict[str, Any] = {
+            "table": table_display,
+            "table_id": table_id,
+            "finding_type": finding_type,
+            "total_findings": len(findings),
+            "findings": findings,
+        }
+        if pagination and pagination.get("nextCursor"):
+            response["next_page_cursor"] = pagination["nextCursor"]
+        return response
+
+    except Exception as e:
+        return {"error": True, "message": f"Error fetching sensitivity findings: {str(e)}"}
+
+
+@mcp.tool()
+async def get_scan_findings(
+    table_ids: Optional[List[int]] = None,
+    column_ids: Optional[List[int]] = None,
+    data_class_ids: Optional[List[int]] = None,
+    sensitivities: Optional[List[str]] = None,
+    positive_only: bool = False,
+    finding_type: str = "aggregate",
+    search: Optional[str] = None,
+    page_size: Optional[int] = None,
+    page_cursor: Optional[str] = None,
+) -> Dict[str, Any]:
+    """Get data classification scan findings from Bigeye using raw IDs.
+
+    Lower-level tool for querying findings across multiple tables/columns by ID.
+    For a single table by name, prefer get_table_sensitivity_findings instead.
+
+    Args:
+        table_ids: Optional list of Bigeye table IDs to filter findings
+        column_ids: Optional list of Bigeye column IDs to filter findings
+        data_class_ids: Optional list of data class IDs to filter by classification type
+        sensitivities: Optional list of sensitivity levels to filter by. Possible values:
+            - DATA_SENSITIVITY_PUBLIC
+            - DATA_SENSITIVITY_INTERNAL
+            - DATA_SENSITIVITY_CONFIDENTIAL
+            - DATA_SENSITIVITY_RESTRICTED
+        positive_only: If true, only return findings where sensitive data was detected.
+            If false (default), return both positive and negative findings.
+        finding_type: Either "aggregate" (all-time summary, default) or "snapshot"
+            (findings from a specific scan run)
+        search: Optional search string to filter results
+        page_size: Optional number of results per page
+        page_cursor: Cursor for pagination
+    """
+    client = get_api_client()
+    workspace_id = config.get("workspace_id")
+
+    if not workspace_id:
+        return {
+            "error": "Workspace ID not configured",
+            "hint": "Check your Claude Desktop configuration for BIGEYE_WORKSPACE_ID",
+        }
+
+    positive_or_negative = "TRUE" if positive_only else None
+
+    try:
+        if finding_type == "snapshot":
+            result = await client.fetch_snapshot_findings(
+                workspace_id=workspace_id,
+                table_ids=table_ids,
+                column_ids=column_ids,
+                data_class_ids=data_class_ids,
+                sensitivities=sensitivities,
+                positive_or_negative_findings=positive_or_negative,
+                page_size=page_size,
+                page_cursor=page_cursor,
+            )
+        else:
+            result = await client.fetch_scan_findings(
+                workspace_id=workspace_id,
+                table_ids=table_ids,
+                column_ids=column_ids,
+                data_class_ids=data_class_ids,
+                sensitivities=sensitivities,
+                positive_or_negative_findings=positive_or_negative,
+                search=search,
+                page_size=page_size,
+                page_cursor=page_cursor,
+            )
+
+        if isinstance(result, dict) and result.get("error"):
+            return {
+                "error": f"API error (status {result.get('status_code', 'unknown')}): {result.get('message', 'Unknown error')}",
+            }
+
+        findings = result.get("findings", [])
+        formatted = [
+            {
+                "scan_job": f.get("scanJob"),
+                "source": f.get("source"),
+                "schema": f.get("schema"),
+                "table": f.get("table"),
+                "column": f.get("column"),
+                "classifier": f.get("classifier"),
+                "data_class": f.get("dataClass"),
+                "is_positive": f.get("isPositive"),
+                "rows_scanned": f.get("rowsScanned"),
+                "rows_matched": f.get("rowsMatched"),
+                "scan_type": f.get("scanType"),
+            }
+            for f in findings
+        ]
+
+        response: Dict[str, Any] = {
+            "total_returned": len(formatted),
+            "findings": formatted,
+        }
+        pagination = result.get("paginationInfo")
+        if pagination and pagination.get("nextCursor"):
+            response["next_page_cursor"] = pagination["nextCursor"]
+        return response
+
+    except Exception as e:
+        return {"error": True, "message": f"Error fetching scan findings: {str(e)}"}
 
 
 # Run the server if executed directly
