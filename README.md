@@ -2,6 +2,10 @@
 
 An MCP (Model Context Protocol) server that provides tools for interacting with the Bigeye Data Observability platform.
 
+## Prerequisites
+
+- [Docker](https://docs.docker.com/get-docker/) (Docker Desktop or Docker Engine)
+
 ## Quick Start
 
 1. Build the Docker image:
@@ -44,6 +48,8 @@ An MCP (Model Context Protocol) server that provides tools for interacting with 
 ### Long-Lived Container (Recommended)
 
 Uses `mcp-wrapper.sh` + `bigeye-mcp.sh` with `docker compose`. The container stays running and Claude Desktop connects via `docker exec`.
+
+> **Note:** `mcp-wrapper.sh` relies on Docker Compose automatically reading the `.env` file from the project directory. Make sure your `.env` file is in the same directory as `docker-compose.yml`.
 
 ```json
 {
@@ -95,11 +101,20 @@ The `bigeye-mcp.sh` script manages the long-lived container:
 
 To connect to multiple Bigeye instances (e.g. demo and production), create separate environment files and compose overrides:
 
-1. Create environment files for each instance:
-   ```bash
-   cp .env.example .env.demo
-   cp .env.example .env.app
-   # Edit each with the appropriate credentials
+1. Create environment files for each instance. Note that the compose overrides expect **prefixed** variable names (`BIGEYE_DEMO_*` / `BIGEYE_APP_*`):
+
+   `.env.demo`:
+   ```
+   BIGEYE_DEMO_API_KEY=your_demo_api_key
+   BIGEYE_DEMO_WORKSPACE_ID=your_demo_workspace_id
+   BIGEYE_DEBUG=false
+   ```
+
+   `.env.app`:
+   ```
+   BIGEYE_APP_API_KEY=your_app_api_key
+   BIGEYE_APP_WORKSPACE_ID=your_app_workspace_id
+   BIGEYE_DEBUG=false
    ```
 
 2. Use the environment-specific compose overrides:
@@ -221,7 +236,11 @@ To connect to multiple Bigeye instances (e.g. demo and production), create separ
 
 **Resources:**
 - `bigeye://auth/status` — Current authentication status
-- `bigeye://issues/all` — All issues from the configured workspace
+- `bigeye://health` — API health status
+- `bigeye://config` — Current server configuration
+- `bigeye://issues` — All issues from the configured workspace
+- `bigeye://issues/active` — Active issues with filtering
+- `bigeye://issues/recent` — Recently resolved or updated issues
 
 **Prompts:**
 - `authentication_flow` — Guide for setting up authentication
@@ -231,7 +250,7 @@ To connect to multiple Bigeye instances (e.g. demo and production), create separ
 
 ## Agent Lineage Tracking
 
-The server includes comprehensive lineage tracking for AI agents — see [AGENT_LINEAGE_TRACKING.md](AGENT_LINEAGE_TRACKING.md) for details.
+The server includes comprehensive lineage tracking for AI agents. Use the `lineage_track_data_access` tool to record data assets accessed during an agent session, then `lineage_commit_agent` to persist them to Bigeye's lineage graph. See the tool descriptions above for full details.
 
 ## Development Setup
 
@@ -258,6 +277,21 @@ For local development without Docker:
    python server.py
    ```
 
+## Testing
+
+```bash
+# Run basic container tests
+./scripts/test.sh
+
+# Run basic tests + MCP protocol tests
+./scripts/test.sh --mcp
+
+# Run MCP protocol tests standalone (with optional --debug)
+./scripts/test-mcp-protocol.sh
+```
+
+See [tests/README.md](tests/README.md) for details on the test suite.
+
 ## Troubleshooting
 
 ### Missing Environment Variables
@@ -279,3 +313,6 @@ For local development without Docker:
 - Check Docker is running: `docker info`
 - Verify image exists: `docker images | grep bigeye`
 - Check logs: `./bigeye-mcp.sh logs`
+
+### `~/.bigeye-mcp` Directory
+The `docker-compose.yml` mounts `~/.bigeye-mcp` into the container for persistent credential storage. Docker will create this directory automatically if it doesn't exist. You don't need to put anything in it manually — it's used internally by the server.

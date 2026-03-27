@@ -56,7 +56,7 @@ trap "rm -rf $TEST_DIR" EXIT
 # Create test environment file
 cat > "$TEST_DIR/.env" <<EOF
 BIGEYE_API_KEY=test_api_key
-BIGEYE_API_URL=https://app.bigeye.com
+BIGEYE_BASE_URL=https://app.bigeye.com
 BIGEYE_WORKSPACE_ID=12345
 BIGEYE_DEBUG=true
 EOF

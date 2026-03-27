@@ -20,7 +20,7 @@ Contains JSON-RPC messages used for testing:
 - **List Tools**: Discover available tools
 - **List Resources**: Discover available resources
 - **List Prompts**: Discover available prompts
-- **Call Tool**: Execute the `check_health` tool
+- **Call Tool**: Execute the `get_health_status` tool
 - **Read Resource**: Read the `bigeye://config` resource
 - **Error Handling**: Test invalid method handling
 
@@ -84,13 +84,13 @@ python tests/mcp_test_client.py --env-file .env.test
    ```
 
 3. **Discovery Tests**
-   - Lists all available tools (12+ expected)
-   - Lists all resources (3 expected)
-   - Lists all prompts (5 expected)
+   - Lists all available tools
+   - Lists all resources
+   - Lists all prompts
 
 4. **Tool Execution**
    ```json
-   → {"jsonrpc": "2.0", "id": 5, "method": "tools/call", "params": {"name": "check_health", ...}}
+   → {"jsonrpc": "2.0", "id": 5, "method": "tools/call", "params": {"name": "get_health_status", ...}}
    ← {"jsonrpc": "2.0", "id": 5, "result": {"content": [{"type": "text", "text": "..."}]}}
    ```
 
@@ -115,14 +115,12 @@ All tests should pass with output similar to:
 
 === Test 2: List Tools ===
 ✓ List Tools: PASS
-  Found 12 tools
 
 === Test 3: List Resources ===
 ✓ List Resources: PASS
-  Found 3 resources
 
-=== Test 4: Call check_health Tool ===
-✓ Call check_health: PASS
+=== Test 4: Call get_health_status Tool ===
+✓ Call get_health_status: PASS
   Response: API Health Status: healthy...
 
 === Test 5: Read Config Resource ===
@@ -136,11 +134,9 @@ All tests should pass with output similar to:
 ✓ initialize: PASS
 ✓ list_tools: PASS
 ✓ list_resources: PASS
-✓ call_check_health: PASS
+✓ call_get_health_status: PASS
 ✓ read_config_resource: PASS
 ✓ error_handling: PASS
-
-Total: 6/6 tests passed
 ```
 
 ## Debugging Failed Tests

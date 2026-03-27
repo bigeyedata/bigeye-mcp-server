@@ -2,7 +2,7 @@
 
 ## Configuration
 
-- Environment variables: `BIGEYE_API_KEY`, `BIGEYE_API_URL`, `BIGEYE_WORKSPACE_ID`
+- Environment variables: `BIGEYE_API_KEY`, `BIGEYE_BASE_URL`, `BIGEYE_WORKSPACE_ID`
 - Docker image must be tagged with both names: `bigeye-mcp-server:latest` and `bigeye-mcp-ephemeral:latest`
 
 ## Workflow Guidelines

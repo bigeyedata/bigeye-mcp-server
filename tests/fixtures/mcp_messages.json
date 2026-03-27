@@ -28,19 +28,19 @@
       "params": {}
     },
     "expected_tools": [
-      "check_health",
-      "get_issues",
-      "merge_issues",
-      "unmerge_issues",
-      "get_issue_resolution_steps",
+      "get_health_status",
+      "list_issues",
+      "get_issue",
+      "search_issues",
       "update_issue",
+      "create_incident",
+      "get_resolution_steps",
       "get_lineage_node",
       "get_lineage_graph",
-      "analyze_upstream_root_causes",
-      "analyze_downstream_impact",
-      "get_lineage_node_issues",
-      "get_upstream_issues_for_report",
-      "trace_issue_lineage_path"
+      "get_upstream_root_causes",
+      "get_downstream_impact",
+      "list_lineage_node_issues",
+      "get_issue_lineage_trace"
     ]
   },
   "list_resources": {
@@ -71,13 +71,13 @@
       "lineage_analysis_examples"
     ]
   },
-  "call_check_health": {
+  "call_get_health_status": {
     "request": {
       "jsonrpc": "2.0",
       "id": 5,
       "method": "tools/call",
       "params": {
-        "name": "check_health",
+        "name": "get_health_status",
         "arguments": {}
       }
     },

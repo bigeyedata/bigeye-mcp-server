@@ -33,7 +33,7 @@ class MCPTestClient:
         cmd = [
             "docker", "run", "--rm", "-i",
             "--env", "BIGEYE_API_KEY=test_key",
-            "--env", "BIGEYE_API_URL=https://app.bigeye.com",
+            "--env", "BIGEYE_BASE_URL=https://app.bigeye.com",
             "--env", "BIGEYE_WORKSPACE_ID=12345"
         ]
         
@@ -207,23 +207,23 @@ def run_test_sequence(client: MCPTestClient, fixtures_file: str) -> Dict[str, bo
             results["list_resources"] = False
             print("✗ List Resources: No response")
     
-    # Test 4: Call check_health tool
-    print("\n=== Test 4: Call check_health Tool ===")
-    check_health_msg = fixtures["call_check_health"]["request"]
-    if client.send_message(check_health_msg):
+    # Test 4: Call get_health_status tool
+    print("\n=== Test 4: Call get_health_status Tool ===")
+    health_msg = fixtures["call_get_health_status"]["request"]
+    if client.send_message(health_msg):
         response = client.get_response()
         if response and "result" in response:
             result = response["result"]
             is_valid = isinstance(result, dict) and "content" in result
-            results["call_check_health"] = is_valid
-            print(f"✓ Call check_health: {'PASS' if is_valid else 'FAIL'}")
+            results["call_get_health_status"] = is_valid
+            print(f"✓ Call get_health_status: {'PASS' if is_valid else 'FAIL'}")
             if is_valid and isinstance(result["content"], list) and len(result["content"]) > 0:
                 content = result["content"][0]
                 if content.get("type") == "text":
                     print(f"  Response: {content.get('text', '')[:100]}...")
         else:
-            results["call_check_health"] = False
-            print("✗ Call check_health: No response")
+            results["call_get_health_status"] = False
+            print("✗ Call get_health_status: No response")
     
     # Test 5: Read config resource
     print("\n=== Test 5: Read Config Resource ===")
