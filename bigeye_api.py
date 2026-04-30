@@ -8,20 +8,42 @@ import httpx
 import sys
 from typing import Dict, Any, Optional, List
 
+from auth_context import current_auth_context
+
 class BigeyeAPIClient:
-    """Client for interacting with the Bigeye API."""
-    
+    """Client for interacting with the Bigeye API.
+
+    The api_url / api_key / workspace_id properties resolve from the
+    per-request auth contextvar first (HTTP mode) and fall back to the
+    constructor args (stdio mode, where the values come from env vars).
+    """
+
     def __init__(self, api_url: str = "https://staging.bigeye.com", api_key: Optional[str] = None, workspace_id: Optional[int] = None):
         """Initialize the Bigeye API client.
-        
+
         Args:
-            api_url: The URL of the Bigeye API
-            api_key: The API key for authentication
-            workspace_id: The workspace ID to use for API requests
+            api_url: Fallback Bigeye instance URL when no request context is set.
+            api_key: Fallback API key when no request context is set.
+            workspace_id: Fallback workspace ID when no request context is set.
         """
-        self.api_url = api_url
-        self.api_key = api_key
-        self.workspace_id = workspace_id
+        self._fallback_api_url = api_url
+        self._fallback_api_key = api_key
+        self._fallback_workspace_id = workspace_id
+
+    @property
+    def api_url(self) -> str:
+        ctx = current_auth_context()
+        return ctx.api_url if ctx else self._fallback_api_url
+
+    @property
+    def api_key(self) -> Optional[str]:
+        ctx = current_auth_context()
+        return ctx.api_key if ctx else self._fallback_api_key
+
+    @property
+    def workspace_id(self) -> Optional[int]:
+        ctx = current_auth_context()
+        return ctx.workspace_id if ctx else self._fallback_workspace_id
     
     async def make_request(
         self, 

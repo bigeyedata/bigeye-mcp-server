@@ -3913,4 +3913,34 @@ async def get_scan_findings(
 
 # Run the server if executed directly
 if __name__ == "__main__":
-    mcp.run()
+    import argparse
+
+    parser = argparse.ArgumentParser(description="Bigeye MCP server")
+    parser.add_argument(
+        "--http",
+        action="store_true",
+        help="Run as a Streamable HTTP MCP server (BYOK: per-request bearer = Bigeye API key).",
+    )
+    parser.add_argument(
+        "--host",
+        default="0.0.0.0",
+        help="Host to bind in --http mode (default 0.0.0.0).",
+    )
+    parser.add_argument(
+        "--port",
+        type=int,
+        default=9101,
+        help="Port to bind in --http mode (default 9101).",
+    )
+    args = parser.parse_args()
+
+    if args.http:
+        from transport_http import run_http
+        run_http(host=args.host, port=args.port)
+    else:
+        # Stdio mode: env vars are the only source of upstream creds, so
+        # enforce them here (HTTP mode skips this, since per-request
+        # bearer headers replace env).
+        from config import check_required_env_vars
+        check_required_env_vars()
+        mcp.run()

@@ -39,5 +39,16 @@ ENV HOME=/home/mcp
 ENV PYTHONUNBUFFERED=1
 ENV PYTHONDONTWRITEBYTECODE=1
 
-# The MCP server runs via stdio, so we use the server directly
-CMD ["python", "server.py"]
+# HTTP (BYOK) transport. Each MCP client request carries:
+#   Authorization: Bearer <bigeye-api-key>
+#   X-Bigeye-Base-Url: https://app.bigeye.com
+#   X-Bigeye-Workspace-Id: 12345
+# No Authorization Server lives in this container — the bearer is the
+# user's Bigeye API key, validated by Bigeye on every upstream call.
+EXPOSE 9101
+
+HEALTHCHECK --interval=30s --timeout=3s --start-period=20s --retries=3 \
+    CMD python -c "import urllib.request,sys;\
+sys.exit(0 if urllib.request.urlopen('http://localhost:9101/health',timeout=2).status==200 else 1)" || exit 1
+
+CMD ["python", "server.py", "--http", "--port", "9101"]

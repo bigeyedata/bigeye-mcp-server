@@ -1,14 +1,19 @@
 """
 Configuration module for Bigeye MCP Server
 
-Loads configuration from environment variables.
-No fallbacks - credentials must be provided via environment variables.
+Loads configuration from environment variables. In stdio mode these are
+the credentials used for every upstream Bigeye call. In HTTP (BYOK) mode
+the env vars are still loaded as fallbacks, but per-request credentials
+from the auth contextvar take precedence — see ``auth_context.py`` and
+the ``ContextAwareConfig`` proxy below.
 """
 
 import os
 import sys
 import time
 from pathlib import Path
+
+from auth_context import current_auth_context
 
 
 # Default configuration
@@ -122,21 +127,16 @@ def check_required_env_vars() -> None:
 # Module-level initialization
 # ---------------------------------------------------------------------------
 
-# Create the configuration from environment variables only
-config = {
-    # API URL (env var with BIGEYE_BASE_URL taking precedence or BIGEYE_API_URL)
+# Env-derived fallback values. In stdio mode these are the only source of
+# truth; in HTTP mode the bearer middleware overrides api_key/api_url/
+# workspace_id per request via the auth contextvar.
+_env_config = {
     "api_url": os.environ.get("BIGEYE_BASE_URL",
                               os.environ.get("BIGEYE_API_URL",
                                              DEFAULT_CONFIG["api_url"])),
-
-    # API Key (env var only)
     "api_key": os.environ.get("BIGEYE_API_KEY"),
-
-    # Workspace ID (env var only)
-    "workspace_id": None,  # Will be set below with proper error handling
-
-    # Debug mode (env var only)
-    "debug": os.environ.get("BIGEYE_DEBUG", "").lower() in ["true", "1", "yes"]
+    "workspace_id": None,  # parsed below
+    "debug": os.environ.get("BIGEYE_DEBUG", "").lower() in ["true", "1", "yes"],
 }
 
 # Handle workspace_id conversion with proper error handling
@@ -144,15 +144,51 @@ workspace_id_str = os.environ.get("BIGEYE_WORKSPACE_ID")
 if workspace_id_str:
     try:
         if str(workspace_id_str).strip():
-            config["workspace_id"] = int(workspace_id_str)
+            _env_config["workspace_id"] = int(workspace_id_str)
     except ValueError:
         print(f"[BIGEYE MCP] ERROR: Invalid workspace_id value: {workspace_id_str}", file=sys.stderr)
         print("[BIGEYE MCP] The workspace_id must be a number.", file=sys.stderr)
         sys.exit(1)
 
+
+_REQUEST_OVERRIDABLE = frozenset({"api_url", "api_key", "workspace_id"})
+
+
+class ContextAwareConfig:
+    """Dict-like proxy. Resolves api_url/api_key/workspace_id from the
+    per-request auth contextvar when set, otherwise from env-derived
+    fallbacks. Other keys (debug) read straight from the underlying dict."""
+
+    def __init__(self, base: dict):
+        self._base = base
+
+    def get(self, key: str, default=None):
+        if key in _REQUEST_OVERRIDABLE:
+            ctx = current_auth_context()
+            if ctx is not None:
+                return getattr(ctx, key)
+        if key in self._base:
+            return self._base[key]
+        return default
+
+    def __getitem__(self, key: str):
+        value = self.get(key)
+        if value is None and key not in self._base:
+            raise KeyError(key)
+        return value
+
+    def __contains__(self, key: str) -> bool:
+        return key in self._base or (
+            key in _REQUEST_OVERRIDABLE and current_auth_context() is not None
+        )
+
+
+config = ContextAwareConfig(_env_config)
+
 # Startup diagnostics (always printed)
-_print_startup_banner(config)
+_print_startup_banner(_env_config)
 _check_typos()
 
-# Validate required variables
-check_required_env_vars()
+# Required-env validation runs only when explicitly requested (stdio
+# entrypoint). HTTP mode tolerates missing fallbacks because the bearer
+# middleware supplies credentials per request.

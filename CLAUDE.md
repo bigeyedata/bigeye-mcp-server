@@ -5,6 +5,20 @@
 - Environment variables: `BIGEYE_API_KEY`, `BIGEYE_BASE_URL`, `BIGEYE_WORKSPACE_ID`
 - Docker image must be tagged with both names: `bigeye-mcp-server:latest` and `bigeye-mcp-ephemeral:latest`
 
+## Transports
+
+The same image runs in two modes; the Dockerfile defaults to HTTP:
+
+- **stdio** (`python server.py`) — original Claude Desktop path, env vars are the credentials. Compose service: `bigeye-mcp`. Used by `mcp-wrapper.sh` / `bigeye-mcp.sh`.
+- **HTTP / BYOK** (`python server.py --http`, `:9101`) — for cloud agents like the Bigeye DRE Agent. No env-var credentials; each request supplies them as headers:
+  - `Authorization: Bearer <bigeye-api-key>`
+  - `X-Bigeye-Base-Url: https://app.bigeye.com`
+  - `X-Bigeye-Workspace-Id: <int>`
+
+  Compose services: `bigeye-mcp-http` (the server) and `ngrok` (under `--profile tunnel`). Public URL: `https://bigeye-mcp.ngrok.app/mcp`. ngrok IP allowlist policy: `ipp_3D5i0vsFRuy9jDdyEj8KfuBsWPE` (in `infra/ngrok-policy.yml`).
+
+Per-request credentials flow through `auth_context.py`'s contextvar; `BigeyeAPIClient` and `config.get(...)` both consult it before falling back to env vars, so existing tool code didn't need changes.
+
 ## Workflow Guidelines
 
 ### Issue ID vs Display Name

@@ -45,6 +45,42 @@ An MCP (Model Context Protocol) server that provides tools for interacting with 
 
 ## Container Modes
 
+### HTTP (BYOK) — for cloud agents over ngrok
+
+The HTTP transport accepts credentials per request, so a single container can serve any user with a Bigeye API key. The Bigeye DRE Agent's `configure-mcp-server` workflow plugs into this directly.
+
+**Connection flow:**
+
+1. The user generates a Bigeye API key (Settings → API Keys).
+2. They run `configure-mcp-server` in the DRE Agent and provide:
+   - the **ngrok URL** of this server (`https://<your-tunnel>.ngrok-free.app`)
+   - their **Bigeye API key**
+   - their **Bigeye instance URL** (e.g. `https://app.bigeye.com`)
+   - their **workspace ID**
+3. The agent attaches three headers to every MCP request:
+   ```
+   Authorization: Bearer <bigeye-api-key>
+   X-Bigeye-Base-Url: https://app.bigeye.com
+   X-Bigeye-Workspace-Id: 12345
+   ```
+4. The MCP server uses those credentials verbatim for every upstream Bigeye call. There is no Authorization Server and no token store — Bigeye validates the key by responding 401/403 if it's bad.
+
+**Run it:**
+
+```bash
+# Bring up just the HTTP MCP container
+docker compose up -d bigeye-mcp-http
+
+# Or also start the ngrok tunnel (requires ~/Library/Application Support/ngrok/ngrok.yml)
+docker compose --profile tunnel up -d
+```
+
+The HTTP server listens on `:9101` inside the container (mapped to `:9101` on the host) and exposes:
+- `POST /mcp` — Streamable HTTP MCP endpoint (bearer required)
+- `GET /health` — unauthenticated health check
+
+**Security model.** The bearer auth on `/mcp` proves the caller has a valid Bigeye API key, but the ngrok tunnel is the only thing keeping random internet traffic from probing your endpoint. Edit `infra/ngrok-policy.yml` and replace `ipp_REPLACE_ME` with your ngrok IP policy ID before exposing this publicly. A leaked ngrok URL plus a leaked API key gives full access to that user's workspace.
+
 ### Long-Lived Container (Recommended)
 
 Uses `mcp-wrapper.sh` + `bigeye-mcp.sh` with `docker compose`. The container stays running and Claude Desktop connects via `docker exec`.
