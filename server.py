@@ -837,6 +837,9 @@ async def list_issues(
         page_size: Optional number of issues to request from API per page (default: 20)
         page_cursor: Cursor for pagination
         compact: If True (default), returns only minimal fields (id, name, status, table, schema).
+                When an issue has an assignee, the output also includes `assignee`
+                (name/email) and `assigneeId` (integer ID) — useful for verifying
+                assignee filtering.
                 If False, returns standard fields including description and metric info.
                 Use compact=True to list issues, then get_issue() for specifics.
         max_issues: Maximum number of issues to return (default: 15). Prevents context overload.
@@ -868,7 +871,7 @@ async def list_issues(
         workspace_id=workspace_id,
         currentStatus=statuses,
         schemaNames=schema_names,
-        assignee_ids=assignee_ids,
+        assigneeIds=assignee_ids,
         page_size=page_size if page_size else 20,
         page_cursor=page_cursor,
         include_full_history=False,

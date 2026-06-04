@@ -185,7 +185,7 @@ class BigeyeAPIClient:
         workspace_id: int,
         currentStatus: Optional[List[str]] = None,
         schemaNames: Optional[List[str]] = None,
-        assignee_ids: Optional[List[int]] = None,
+        assigneeIds: Optional[List[int]] = None,
         page_size: Optional[int] = None,
         page_cursor: Optional[str] = None,
         include_full_history: bool = False,
@@ -199,13 +199,16 @@ class BigeyeAPIClient:
             currentStatus: Optional list of issue statuses to filter by
                 (e.g., ["ISSUE_STATUS_NEW", "ISSUE_STATUS_ACKNOWLEDGED"])
             schemaNames: Optional list of schema names to filter issues by
-            assignee_ids: Optional list of integer user IDs to filter issues by assignee.
+            assigneeIds: Optional list of integer user IDs to filter issues by assignee.
                 Use fetch_current_user() to resolve the current user's ID.
             page_size: Optional number of issues to return per page
             page_cursor: Cursor for pagination
             include_full_history: If False, strips out historical metric runs to reduce data size
             compact: If True, returns only minimal fields (id, name, status, table, schema).
-                    Use this for listing issues, then fetch details for specific issues.
+                    When an issue has an assignee, the output also includes `assignee`
+                    (name/email) and `assigneeId` (integer ID) — useful for verifying
+                    assignee filtering. Use this for listing issues, then fetch details
+                    for specific issues.
             max_issues: Maximum number of issues to return. If there are more issues,
                        the response will include truncation info. Helps prevent context overload.
 
@@ -229,8 +232,8 @@ class BigeyeAPIClient:
         if schemaNames:
             payload["schemaNames"] = schemaNames
 
-        if assignee_ids:
-            payload["assigneeIds"] = assignee_ids
+        if assigneeIds:
+            payload["assigneeIds"] = assigneeIds
 
         if page_cursor:
             payload["pageCursor"] = page_cursor
