@@ -29,6 +29,7 @@
     },
     "expected_tools": [
       "get_health_status",
+      "get_current_user",
       "list_issues",
       "get_issue",
       "search_issues",

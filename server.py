@@ -791,15 +791,37 @@ async def get_health_status() -> Dict[str, Any]:
     return result
 
 @mcp.tool()
+async def get_current_user() -> Dict[str, Any]:
+    """Get the currently authenticated Bigeye user (the API key owner). Returns their integer 'id', email, name, and accessible workspaces. Use this to answer 'who am I' and to resolve the current user's ID for assignee filtering — e.g. to find issues assigned to the current user, call this, then list_issues(assignee_ids=[id])."""
+
+    client = get_api_client()
+
+    debug_print("Fetching current authenticated user")
+    result = await client.fetch_current_user()
+
+    if result.get("error"):
+        return result
+
+    # Return a trimmed view of the UserAuth payload with the fields callers need
+    return {
+        "id": result.get("id"),
+        "email": result.get("email"),
+        "name": result.get("name"),
+        "companyId": result.get("companyId"),
+        "workspaces": result.get("workspaces"),
+    }
+
+@mcp.tool()
 async def list_issues(
     statuses: Optional[List[str]] = None,
     schema_names: Optional[List[str]] = None,
+    assignee_ids: Optional[List[int]] = None,
     page_size: Optional[int] = None,
     page_cursor: Optional[str] = None,
     compact: bool = True,
     max_issues: Optional[int] = 15
 ) -> Dict[str, Any]:
-    """List data quality issues across the workspace. Supports filtering by status (ISSUE_STATUS_NEW, ISSUE_STATUS_ACKNOWLEDGED, ISSUE_STATUS_CLOSED, ISSUE_STATUS_MONITORING, ISSUE_STATUS_MERGED) and schema. Returns compact summaries by default. Best for broad views like 'show all open issues'. For issues on a specific table, use list_table_issues instead.
+    """List data quality issues across the workspace. Supports filtering by status (ISSUE_STATUS_NEW, ISSUE_STATUS_ACKNOWLEDGED, ISSUE_STATUS_CLOSED, ISSUE_STATUS_MONITORING, ISSUE_STATUS_MERGED), schema, and assignee. Returns compact summaries by default. Best for broad views like 'show all open issues'. To find issues assigned to the current user, first call get_current_user to get their integer 'id', then pass it as assignee_ids=[id]. For issues on a specific table, use list_table_issues instead.
 
     Args:
         statuses: Optional list of issue statuses to filter by. Possible values:
@@ -809,9 +831,15 @@ async def list_issues(
             - ISSUE_STATUS_MONITORING
             - ISSUE_STATUS_MERGED
         schema_names: Optional list of schema names to filter issues by
+        assignee_ids: Optional list of integer user IDs to filter issues by assignee.
+            To filter by the current user ("assigned to me"), call get_current_user
+            first and use the returned 'id'.
         page_size: Optional number of issues to request from API per page (default: 20)
         page_cursor: Cursor for pagination
         compact: If True (default), returns only minimal fields (id, name, status, table, schema).
+                When an issue has an assignee, the output also includes `assignee`
+                (name/email) and `assigneeId` (integer ID) — useful for verifying
+                assignee filtering.
                 If False, returns standard fields including description and metric info.
                 Use compact=True to list issues, then get_issue() for specifics.
         max_issues: Maximum number of issues to return (default: 15). Prevents context overload.
@@ -836,11 +864,14 @@ async def list_issues(
         debug_print(f"Filtering by statuses: {statuses}")
     if schema_names:
         debug_print(f"Filtering by schema names: {schema_names}")
+    if assignee_ids:
+        debug_print(f"Filtering by assignee IDs: {assignee_ids}")
 
     result = await client.fetch_issues(
         workspace_id=workspace_id,
         currentStatus=statuses,
         schemaNames=schema_names,
+        assigneeIds=assignee_ids,
         page_size=page_size if page_size else 20,
         page_cursor=page_cursor,
         include_full_history=False,
