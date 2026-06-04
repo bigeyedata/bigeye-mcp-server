@@ -168,11 +168,24 @@ class BigeyeAPIClient:
             method="GET"
         )
             
+    async def fetch_current_user(self) -> Dict[str, Any]:
+        """Fetch the currently authenticated user from the /auth endpoint.
+
+        Returns the UserAuth payload, which includes the integer user ``id``,
+        ``email``, ``name``, ``companyId``, and the list of accessible workspaces.
+        Use the returned ``id`` to filter issues by assignee via fetch_issues().
+
+        Returns:
+            Dictionary containing the current user's authentication/profile info
+        """
+        return await self.make_request("/auth", method="GET")
+
     async def fetch_issues(
         self,
         workspace_id: int,
         currentStatus: Optional[List[str]] = None,
         schemaNames: Optional[List[str]] = None,
+        assignee_ids: Optional[List[int]] = None,
         page_size: Optional[int] = None,
         page_cursor: Optional[str] = None,
         include_full_history: bool = False,
@@ -186,6 +199,8 @@ class BigeyeAPIClient:
             currentStatus: Optional list of issue statuses to filter by
                 (e.g., ["ISSUE_STATUS_NEW", "ISSUE_STATUS_ACKNOWLEDGED"])
             schemaNames: Optional list of schema names to filter issues by
+            assignee_ids: Optional list of integer user IDs to filter issues by assignee.
+                Use fetch_current_user() to resolve the current user's ID.
             page_size: Optional number of issues to return per page
             page_cursor: Cursor for pagination
             include_full_history: If False, strips out historical metric runs to reduce data size
@@ -213,6 +228,9 @@ class BigeyeAPIClient:
 
         if schemaNames:
             payload["schemaNames"] = schemaNames
+
+        if assignee_ids:
+            payload["assigneeIds"] = assignee_ids
 
         if page_cursor:
             payload["pageCursor"] = page_cursor
@@ -264,6 +282,11 @@ class BigeyeAPIClient:
                     "isIncident": issue.get("issueType") == "ISSUE_TYPE_INCIDENT" or issue.get("isIncident", False),
                     "alertCount": issue.get("alertCount"),
                 }
+                # Include assignee id/name if present
+                assignee = issue.get("assignee")
+                if assignee:
+                    compact_issue["assignee"] = assignee.get("name") or assignee.get("email")
+                    compact_issue["assigneeId"] = assignee.get("id")
                 compact_issues.append(compact_issue)
 
             # Normalize to always use "issues" key in output
@@ -298,10 +321,11 @@ class BigeyeAPIClient:
                     "openedTimeSeconds": issue.get("openedTimeSeconds"),
                 }
 
-                # Add assignee name if present
+                # Add assignee name/id if present
                 assignee = issue.get("assignee")
                 if assignee:
                     filtered_issue["assignee"] = assignee.get("name") or assignee.get("email")
+                    filtered_issue["assigneeId"] = assignee.get("id")
 
                 # Add only the most recent event summary if events exist
                 events = issue.get("events", [])
