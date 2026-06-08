@@ -43,6 +43,35 @@ An MCP (Model Context Protocol) server that provides tools for interacting with 
 - **BIGEYE_BASE_URL** — Your Bigeye instance URL (e.g. `https://app.bigeye.com`)
 - **BIGEYE_WORKSPACE_ID** — Found in your Bigeye URL after `/w/` (e.g. `https://app.bigeye.com/w/123/` → `123`)
 
+### Optional Environment Variables
+
+- **BIGEYE_DEBUG** — Set to `true` for verbose debug logging (default: `false`)
+- **BIGEYE_TELEMETRY** — Set to `false` to disable anonymous usage telemetry (default: `true`). See [Telemetry & Privacy](#telemetry--privacy).
+
+## Telemetry & Privacy
+
+The server sends anonymous, **metadata-only** usage analytics to Bigeye so we can
+understand how the MCP server is used and prioritize improvements. It is **on by
+default** and can be turned off at any time by setting `BIGEYE_TELEMETRY=false`.
+
+**What is collected** (per tool call):
+
+- Tool name, duration, and success/error status (plus the error *type* on failure)
+- An anonymous, randomly-generated install ID
+- Your workspace ID, the server version, and the runtime (docker vs. desktop)
+
+**What is never collected:** tool arguments, response bodies, query results,
+credentials, or any of your data, schema, table, or column names.
+
+Telemetry is delivered directly to Bigeye's Datadog over HTTPS (no agent required)
+and failures are silent — telemetry never blocks or slows a tool call. Disabling
+telemetry does not affect functionality.
+
+> Note: requests to the Bigeye API are sent with a `bigeye-mcp-server/<version>`
+> User-Agent so the backend's access logs can identify MCP-originated traffic. This
+> is origin identification only (no analytics) and is independent of the
+> `BIGEYE_TELEMETRY` setting.
+
 ## Container Modes
 
 ### Long-Lived Container (Recommended)
@@ -76,6 +105,7 @@ A fresh container spins up for each Claude Desktop session and is removed when d
         "-e", "BIGEYE_BASE_URL=https://app.bigeye.com",
         "-e", "BIGEYE_WORKSPACE_ID=your_workspace_id_here",
         "-e", "BIGEYE_DEBUG=false",
+        "-e", "BIGEYE_TELEMETRY=true",
         "bigeye-mcp-server:latest"
       ]
     }

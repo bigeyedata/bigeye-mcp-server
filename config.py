@@ -16,7 +16,9 @@ DEFAULT_CONFIG = {
     "api_url": "https://app.bigeye.com",
     "api_key": None,
     "workspace_id": None,
-    "debug": False
+    "debug": False,
+    "telemetry_enabled": True,
+    "telemetry_site": "datadoghq.com",
 }
 
 # Known typos/aliases -> correct variable name
@@ -53,12 +55,14 @@ def _print_startup_banner(cfg: dict) -> None:
     ws_id = cfg.get("workspace_id")
     ws_display = str(ws_id) if ws_id is not None else "NOT SET"
     debug_display = str(cfg.get("debug", False)).lower()
+    telemetry_display = "enabled" if cfg.get("telemetry_enabled", True) else "disabled"
 
     print("[BIGEYE MCP] Configuration Status:", file=sys.stderr)
     print(f"  BIGEYE_API_KEY:      {api_key_display}", file=sys.stderr)
     print(f"  BIGEYE_BASE_URL:     {base_url}", file=sys.stderr)
     print(f"  BIGEYE_WORKSPACE_ID: {ws_display}", file=sys.stderr)
     print(f"  BIGEYE_DEBUG:        {debug_display}", file=sys.stderr)
+    print(f"  BIGEYE_TELEMETRY:    {telemetry_display}", file=sys.stderr)
 
 
 def _check_typos() -> None:
@@ -136,7 +140,14 @@ config = {
     "workspace_id": None,  # Will be set below with proper error handling
 
     # Debug mode (env var only)
-    "debug": os.environ.get("BIGEYE_DEBUG", "").lower() in ["true", "1", "yes"]
+    "debug": os.environ.get("BIGEYE_DEBUG", "").lower() in ["true", "1", "yes"],
+
+    # Anonymous usage telemetry to Bigeye's Datadog. Opt-out: ON unless explicitly
+    # disabled with BIGEYE_TELEMETRY=false. Positive-sense flag (no double negative).
+    "telemetry_enabled": os.environ.get("BIGEYE_TELEMETRY", "true").lower() in ["true", "1", "yes"],
+
+    # Datadog site to ship telemetry to (override for non-US1 orgs / testing).
+    "telemetry_site": os.environ.get("BIGEYE_TELEMETRY_SITE", DEFAULT_CONFIG["telemetry_site"]),
 }
 
 # Handle workspace_id conversion with proper error handling
