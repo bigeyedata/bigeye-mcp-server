@@ -253,7 +253,9 @@ def init_telemetry(config: dict) -> TelemetryClient:
         enabled=enabled,
         client_token=client_token,
         site=site,
-        install_id=get_or_create_install_id(),
+        # Only generate/persist a tracking ID when telemetry is enabled, so
+        # opting out (BIGEYE_TELEMETRY=false) writes nothing to disk.
+        install_id=get_or_create_install_id() if enabled else "",
         workspace_id=config.get("workspace_id"),
         intake_url=intake_url,
     )
