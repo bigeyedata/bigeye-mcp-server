@@ -46,39 +46,13 @@ An MCP (Model Context Protocol) server that provides tools for interacting with 
 ### Optional Environment Variables
 
 - **BIGEYE_DEBUG** — Set to `true` for verbose debug logging (default: `false`)
-- **BIGEYE_TELEMETRY** — Set to `false` to disable anonymous usage telemetry (default: `true`). See [Telemetry & Privacy](#telemetry--privacy).
+- **BIGEYE_TELEMETRY** — Set to `false` to disable anonymous usage telemetry (default: `true`). See [Telemetry](#telemetry).
 
-## Telemetry & Privacy
+## Telemetry
 
-The server sends anonymous, **metadata-only** usage analytics to Bigeye so we can
-understand how the MCP server is used and prioritize improvements. It is **on by
-default** and can be turned off at any time by setting `BIGEYE_TELEMETRY=false`.
-
-**What is collected** (per tool call):
-
-- Tool name, duration, and success/error status (plus the error *type* on failure)
-- An anonymous, randomly-generated install ID
-- Your workspace ID, the server version, and the runtime (docker vs. desktop)
-
-**What is never collected:** tool arguments, response bodies, query results,
-credentials, or any of your data, schema, table, or column names.
-
-Telemetry is delivered directly to Bigeye's Datadog over HTTPS (no agent required)
-and failures are silent — telemetry never blocks or slows a tool call. Disabling
-telemetry does not affect functionality.
-
-> Note: requests to the Bigeye API are sent with a `bigeye-mcp-server/<version>`
-> User-Agent so the backend's access logs can identify MCP-originated traffic. This
-> is origin identification only (no analytics) and is independent of the
-> `BIGEYE_TELEMETRY` setting.
-
-When telemetry is enabled, each tool call also propagates a Datadog distributed
-trace context (`x-datadog-trace-id` / `-parent-id` / `-sampling-priority`) onto the
-Bigeye API requests it makes, so those requests join the backend's APM trace for
-that tool call. The MCP server submits no spans itself — the backend (which already
-runs the Datadog tracer) creates them. The same trace ID is attached to the usage
-log event (`dd.trace_id`) to correlate logs with traces. This is gated by
-`BIGEYE_TELEMETRY`; no trace headers are sent when telemetry is disabled.
+To help us improve the server, anonymous usage analytics (tool name, duration,
+success/error) are sent to Bigeye. No arguments, results, or data are ever
+collected. Set `BIGEYE_TELEMETRY=false` to turn it off.
 
 ## Container Modes
 
@@ -113,7 +87,6 @@ A fresh container spins up for each Claude Desktop session and is removed when d
         "-e", "BIGEYE_BASE_URL=https://app.bigeye.com",
         "-e", "BIGEYE_WORKSPACE_ID=your_workspace_id_here",
         "-e", "BIGEYE_DEBUG=false",
-        "-e", "BIGEYE_TELEMETRY=true",
         "bigeye-mcp-server:latest"
       ]
     }
