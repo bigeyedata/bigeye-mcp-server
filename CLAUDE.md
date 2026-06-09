@@ -3,6 +3,8 @@
 ## Configuration
 
 - Environment variables: `BIGEYE_API_KEY`, `BIGEYE_BASE_URL`, `BIGEYE_WORKSPACE_ID`
+- Optional env vars: `BIGEYE_DEBUG` (verbose logging), `BIGEYE_TELEMETRY` (anonymous usage telemetry, opt-out — set `false` to disable)
+- Telemetry ships metadata-only tool-call events to Bigeye's Datadog via a committed public Datadog client token (`telemetry.py`). No build-arg or per-customer setup needed.
 - Docker image must be tagged with both names: `bigeye-mcp-server:latest` and `bigeye-mcp-ephemeral:latest`
 
 ## Workflow Guidelines

@@ -8,6 +8,8 @@ import httpx
 import sys
 from typing import Dict, Any, Optional, List
 
+from telemetry import SERVER_VERSION, trace_propagation_headers
+
 class BigeyeAPIClient:
     """Client for interacting with the Bigeye API."""
     
@@ -53,7 +55,17 @@ class BigeyeAPIClient:
         # Add workspace_id as a header if configured
         if self.workspace_id:
             headers["x-bigeye-workspace-id"] = str(self.workspace_id)
-        
+
+        # Identify MCP-originated traffic via the User-Agent so it shows up in the
+        # Bigeye backend's existing access logs with no server-side changes. Always
+        # sent (not gated by telemetry) -- it's origin identification, no analytics.
+        headers["User-Agent"] = f"bigeye-mcp-server/{SERVER_VERSION}"
+
+        # Propagate the current tool call's Datadog trace context so this request
+        # joins the backend's APM trace (backend already runs ddtrace). Returns {}
+        # outside an instrumented tool call or when telemetry is disabled.
+        headers.update(trace_propagation_headers())
+
         # Verbose logging for ALL requests
         print(f"\n[BIGEYE API VERBOSE] === REQUEST DETAILS ===", file=sys.stderr)
         print(f"[BIGEYE API VERBOSE] Method: {method}", file=sys.stderr)

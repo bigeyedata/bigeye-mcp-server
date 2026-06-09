@@ -43,6 +43,17 @@ An MCP (Model Context Protocol) server that provides tools for interacting with 
 - **BIGEYE_BASE_URL** — Your Bigeye instance URL (e.g. `https://app.bigeye.com`)
 - **BIGEYE_WORKSPACE_ID** — Found in your Bigeye URL after `/w/` (e.g. `https://app.bigeye.com/w/123/` → `123`)
 
+### Optional Environment Variables
+
+- **BIGEYE_DEBUG** — Set to `true` for verbose debug logging (default: `false`)
+- **BIGEYE_TELEMETRY** — Set to `false` to disable anonymous usage telemetry (default: `true`). See [Telemetry](#telemetry).
+
+## Telemetry
+
+To help us improve the server, anonymous usage analytics (tool name, duration,
+success/error) are sent to Bigeye. No arguments, results, or data are ever
+collected. Set `BIGEYE_TELEMETRY=false` to turn it off.
+
 ## Container Modes
 
 ### Long-Lived Container (Recommended)

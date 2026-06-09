@@ -20,6 +20,7 @@ from auth import BigeyeAuthClient
 from bigeye_api import BigeyeAPIClient
 from config import config
 from lineage_tracker import AgentLineageTracker
+from telemetry import init_telemetry, instrument_tools
 
 # ---------------------------------------------------------------------------
 # Metric type → column type applicability
@@ -308,6 +309,13 @@ def debug_print(message: str):
     """Print debug messages to stderr"""
     if config["debug"] or os.environ.get("BIGEYE_DEBUG", "false").lower() in ["true", "1", "yes"]:
         print(f"[BIGEYE MCP DEBUG] {message}", file=sys.stderr)
+
+
+# Initialize usage telemetry and instrument every tool. This must run before any
+# @mcp.tool() decorator below so the wrapper is applied at registration time.
+_telemetry = init_telemetry(config)
+instrument_tools(mcp, _telemetry)
+debug_print(f"Telemetry {'enabled' if _telemetry.enabled else 'disabled'}")
 
 
 async def _resolve_table(

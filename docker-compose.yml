@@ -18,7 +18,10 @@ services:
       
       # Optional: Debug mode
       - BIGEYE_DEBUG=${BIGEYE_DEBUG:-false}
-      
+
+      # Optional: Anonymous usage telemetry (opt-out). Set to false to disable.
+      - BIGEYE_TELEMETRY=${BIGEYE_TELEMETRY:-true}
+
       # Python environment
       - PYTHONUNBUFFERED=1
       - PYTHONDONTWRITEBYTECODE=1
