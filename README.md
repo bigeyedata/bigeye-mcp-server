@@ -72,6 +72,14 @@ telemetry does not affect functionality.
 > is origin identification only (no analytics) and is independent of the
 > `BIGEYE_TELEMETRY` setting.
 
+When telemetry is enabled, each tool call also propagates a Datadog distributed
+trace context (`x-datadog-trace-id` / `-parent-id` / `-sampling-priority`) onto the
+Bigeye API requests it makes, so those requests join the backend's APM trace for
+that tool call. The MCP server submits no spans itself — the backend (which already
+runs the Datadog tracer) creates them. The same trace ID is attached to the usage
+log event (`dd.trace_id`) to correlate logs with traces. This is gated by
+`BIGEYE_TELEMETRY`; no trace headers are sent when telemetry is disabled.
+
 ## Container Modes
 
 ### Long-Lived Container (Recommended)

@@ -19,6 +19,7 @@ Design notes:
 """
 
 import atexit
+import contextvars
 import functools
 import inspect
 import os
@@ -28,7 +29,7 @@ import threading
 import time
 import uuid
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, Optional, Tuple
 
 import httpx
 
@@ -52,6 +53,57 @@ _BROWSER_INTAKE_HOSTS = {
 
 _SOURCE = "bigeye-mcp-server"
 _SERVICE = "bigeye-mcp-server"
+
+# Distributed-tracing propagation. Per tool call we mint a Datadog trace context
+# and inject it onto the HTTP requests the tool makes to the Bigeye API, so those
+# requests join the backend's existing APM trace (the backend already runs ddtrace).
+# We never submit spans ourselves -- the backend creates them under this trace id.
+#
+# USER_KEEP (2): MCP traffic is low-volume and human-driven, so we force retention
+# to make these traces reliably findable. Revisit if volume/cost grows.
+_TRACE_SAMPLING_PRIORITY = "2"
+_trace_ctx: "contextvars.ContextVar[Optional[Tuple[int, int]]]" = contextvars.ContextVar(
+    "bigeye_trace_ctx", default=None
+)
+
+
+def _gen_trace_id() -> int:
+    """Random non-zero 64-bit id (Datadog trace/span id format)."""
+    return int.from_bytes(os.urandom(8), "big") or 1
+
+
+def start_trace_context() -> Any:
+    """Begin a trace context for the current tool call; returns a reset token."""
+    return _trace_ctx.set((_gen_trace_id(), _gen_trace_id()))
+
+
+def reset_trace_context(token: Any) -> None:
+    try:
+        _trace_ctx.reset(token)
+    except Exception:
+        pass
+
+
+def current_trace_context() -> Optional[Tuple[int, int]]:
+    return _trace_ctx.get()
+
+
+def trace_propagation_headers() -> dict:
+    """Datadog distributed-tracing headers for the active tool call, or {} if none.
+
+    Safe to call from anywhere: returns {} when no tool-call context is active
+    (e.g. telemetry disabled, or a request made outside an instrumented tool).
+    """
+    ctx = _trace_ctx.get()
+    if not ctx:
+        return {}
+    trace_id, span_id = ctx
+    return {
+        "x-datadog-trace-id": str(trace_id),
+        "x-datadog-parent-id": str(span_id),
+        "x-datadog-sampling-priority": _TRACE_SAMPLING_PRIORITY,
+    }
+
 
 # Worker tuning.
 _QUEUE_MAXSIZE = 1000
@@ -141,6 +193,8 @@ class TelemetryClient:
         duration_ms: float,
         status: str,
         error_type: Optional[str],
+        trace_id: Optional[int] = None,
+        span_id: Optional[int] = None,
     ) -> None:
         """Enqueue a tool-call event. Non-blocking; dropped if the queue is full."""
         if not self.enabled:
@@ -159,6 +213,10 @@ class TelemetryClient:
             "server_version": SERVER_VERSION,
             "runtime": self.runtime,
         }
+        if trace_id is not None:
+            # Correlate this log to the backend APM trace for the same tool call.
+            event["dd.trace_id"] = str(trace_id)
+            event["dd.span_id"] = str(span_id)
         try:
             self._queue.put_nowait(event)
         except queue.Full:
@@ -264,11 +322,19 @@ def init_telemetry(config: dict) -> TelemetryClient:
 
 
 def _wrap(fn, telemetry: TelemetryClient):
-    """Wrap a tool function so each invocation records a telemetry event."""
+    """Wrap a tool function so each invocation records a telemetry event and runs
+    under a trace context that gets propagated to the Bigeye API requests it makes."""
 
     def _record(start: float, status: str, error_type: Optional[str]) -> None:
+        ctx = current_trace_context()
+        trace_id, span_id = ctx if ctx else (None, None)
         telemetry.record_tool_call(
-            fn.__name__, (time.perf_counter() - start) * 1000, status, error_type
+            fn.__name__,
+            (time.perf_counter() - start) * 1000,
+            status,
+            error_type,
+            trace_id,
+            span_id,
         )
 
     if inspect.iscoroutinefunction(fn):
@@ -276,6 +342,7 @@ def _wrap(fn, telemetry: TelemetryClient):
         @functools.wraps(fn)
         async def traced(*args, **kwargs):
             start = time.perf_counter()
+            token = start_trace_context()
             status, error_type = "ok", None
             try:
                 result = await fn(*args, **kwargs)
@@ -287,12 +354,14 @@ def _wrap(fn, telemetry: TelemetryClient):
                 raise
             finally:
                 _record(start, status, error_type)
+                reset_trace_context(token)
 
         return traced
 
     @functools.wraps(fn)
     def traced(*args, **kwargs):
         start = time.perf_counter()
+        token = start_trace_context()
         status, error_type = "ok", None
         try:
             result = fn(*args, **kwargs)
@@ -304,6 +373,7 @@ def _wrap(fn, telemetry: TelemetryClient):
             raise
         finally:
             _record(start, status, error_type)
+            reset_trace_context(token)
 
     return traced
 
