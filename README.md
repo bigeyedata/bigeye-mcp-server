@@ -188,7 +188,8 @@ To connect to multiple Bigeye instances (e.g. demo and production), create separ
 
 ### Issue Management
 
-- **`list_issues`** — List data quality issues across the workspace
+- **`list_issues`** — List data quality issues across the workspace (filter by status, schema, or `assignee_ids`)
+- **`get_current_user`** — Get the authenticated user (id, email, name, workspaces); pair with `list_issues(assignee_ids=[id])` to find issues assigned to you
 - **`get_issue`** — Get full details for a single issue by its internal ID
 - **`search_issues`** — Find issues by their display name/number (e.g. "10921")
 - **`list_related_issues`** — List issues related to a given issue via lineage
