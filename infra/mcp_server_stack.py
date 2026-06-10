@@ -1,3 +1,5 @@
+import json
+
 from aws_cdk import (
     Stack,
     Duration,
@@ -30,6 +32,10 @@ class McpServerStack(Stack):
             "SharedBigeyeCreds",
             secret_name="bigeye-mcp-server/shared-credentials",
             description="Shared Bigeye API key + workspace id for the hosted MCP server",
+            generate_secret_string=secretsmanager.SecretStringGenerator(
+                secret_string_template=json.dumps({"workspace_id": "0"}),
+                generate_string_key="api_key",
+            ),
         )
 
         service = ecs_patterns.ApplicationLoadBalancedFargateService(
