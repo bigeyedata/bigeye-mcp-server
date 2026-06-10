@@ -29,7 +29,7 @@ class McpServerStack(Stack):
             self,
             "SharedBigeyeCreds",
             secret_name="bigeye-mcp-server/shared-credentials",
-            description="Shared Bigeye API key + workspace id for the hosted MCP server (SRE-7020)",
+            description="Shared Bigeye API key + workspace id for the hosted MCP server",
         )
 
         service = ecs_patterns.ApplicationLoadBalancedFargateService(

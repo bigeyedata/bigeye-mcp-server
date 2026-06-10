@@ -3953,7 +3953,6 @@ async def get_scan_findings(
         return {"error": True, "message": f"Error fetching scan findings: {str(e)}"}
 
 
-# Lightweight health check for load balancer target groups (HTTP transports only).
 @mcp.custom_route("/health", methods=["GET"])
 async def health_check(request):
     from starlette.responses import PlainTextResponse
@@ -3963,6 +3962,4 @@ async def health_check(request):
 
 # Run the server if executed directly
 if __name__ == "__main__":
-    # Default to stdio for local desktop use; set MCP_TRANSPORT=streamable-http
-    # when hosting remotely (e.g. Fargate).
     mcp.run(transport=os.environ.get("MCP_TRANSPORT", "stdio"))
