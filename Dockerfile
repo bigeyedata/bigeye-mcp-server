@@ -39,5 +39,8 @@ ENV HOME=/home/mcp
 ENV PYTHONUNBUFFERED=1
 ENV PYTHONDONTWRITEBYTECODE=1
 
-# The MCP server runs via stdio, so we use the server directly
+# Transport is chosen at runtime via MCP_TRANSPORT (default: stdio for local use).
+# For remote hosting (e.g. Fargate), set MCP_TRANSPORT=streamable-http; the server
+# then listens on MCP_PORT (default 8080).
+EXPOSE 8080
 CMD ["python", "server.py"]

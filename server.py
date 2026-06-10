@@ -301,7 +301,10 @@ mcp = FastMCP(
                 Which one would you like me to check?"
 
     This ensures accuracy and prevents operations on the wrong database objects.
-    """
+    """,
+    host=os.environ.get("MCP_HOST", "0.0.0.0"),
+    port=int(os.environ.get("MCP_PORT", "8080")),
+    stateless_http=True,
 )
 
 # Debug function
@@ -3950,6 +3953,16 @@ async def get_scan_findings(
         return {"error": True, "message": f"Error fetching scan findings: {str(e)}"}
 
 
+# Lightweight health check for load balancer target groups (HTTP transports only).
+@mcp.custom_route("/health", methods=["GET"])
+async def health_check(request):
+    from starlette.responses import PlainTextResponse
+
+    return PlainTextResponse("ok")
+
+
 # Run the server if executed directly
 if __name__ == "__main__":
-    mcp.run()
+    # Default to stdio for local desktop use; set MCP_TRANSPORT=streamable-http
+    # when hosting remotely (e.g. Fargate).
+    mcp.run(transport=os.environ.get("MCP_TRANSPORT", "stdio"))

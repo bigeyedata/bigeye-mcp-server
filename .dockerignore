@@ -61,6 +61,10 @@ docs/
 .git/
 .gitignore
 
+# CDK infra app
+infra/
+cdk.out/
+
 # Docker
 Dockerfile
 docker-compose.yml

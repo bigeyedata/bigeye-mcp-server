@@ -1,0 +1,64 @@
+name: Deploy MCP server (Fargate)
+
+on:
+  push:
+    branches:
+      - master
+    paths:
+      - "**/*.py"
+      - requirements.txt
+      - Dockerfile
+      - infra/**
+      - .github/workflows/deploy-mcp-server.yaml
+  pull_request:
+    paths:
+      - "**/*.py"
+      - requirements.txt
+      - Dockerfile
+      - infra/**
+      - .github/workflows/deploy-mcp-server.yaml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: deploy-mcp-server
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    name: ${{ github.event_name == 'pull_request' && 'cdk diff' || 'cdk deploy' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      AWS_REGION: us-west-2
+    steps:
+      - uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
+
+      - uses: aws-actions/configure-aws-credentials@8df5847569e6427dd6c4fb1cf565c83acfa8afa7 # v4.2.1
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: us-west-2
+
+      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v5.4.0
+        with:
+          python-version: "3.12"
+
+      - name: Install CDK app dependencies
+        working-directory: infra
+        run: pip install -r requirements.txt
+
+      - name: Install AWS CDK CLI
+        run: npm install -g aws-cdk@2
+
+      - name: CDK diff (PR)
+        if: github.event_name == 'pull_request'
+        working-directory: infra
+        run: cdk diff
+
+      - name: CDK deploy (push / manual)
+        if: github.event_name != 'pull_request'
+        working-directory: infra
+        run: cdk deploy --require-approval never
