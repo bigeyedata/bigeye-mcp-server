@@ -19,7 +19,7 @@ from datetime import datetime, timedelta
 from auth import BigeyeAuthClient
 from bigeye_api import BigeyeAPIClient
 from config import config
-from request_credentials import current_credentials
+from request_credentials import current_credentials, normalize_instance
 from lineage_tracker import AgentLineageTracker
 from telemetry import init_telemetry, instrument_tools
 
@@ -424,7 +424,7 @@ def get_api_client() -> BigeyeAPIClient:
     creds = current_credentials.get(None)
     if creds is not None:
         return BigeyeAPIClient(
-            api_url=config["api_url"],
+            api_url=creds.get("instance") or config["api_url"],
             api_key=creds.get("api_key"),
             workspace_id=creds.get("workspace_id"),
         )
@@ -3987,7 +3987,11 @@ class PerRequestCredentialsMiddleware:
             api_key = (parts[1] if len(parts) == 2 else parts[0]).strip()
             ws_raw = headers.get("x-bigeye-workspace-id", "").strip()
             token = current_credentials.set(
-                {"api_key": api_key, "workspace_id": int(ws_raw) if ws_raw.isdigit() else None}
+                {
+                    "api_key": api_key,
+                    "workspace_id": int(ws_raw) if ws_raw.isdigit() else None,
+                    "instance": normalize_instance(headers.get("x-bigeye-instance", "")),
+                }
             )
         try:
             await self.app(scope, receive, send)
