@@ -77,6 +77,8 @@ def _check_typos() -> None:
 
 def check_required_env_vars() -> None:
     """Check if required environment variables are set."""
+    if os.environ.get("MCP_TRANSPORT") == "streamable-http":
+        return
     required_vars = ["BIGEYE_API_KEY", "BIGEYE_WORKSPACE_ID"]
     missing_vars = [v for v in required_vars if not os.environ.get(v)]
 

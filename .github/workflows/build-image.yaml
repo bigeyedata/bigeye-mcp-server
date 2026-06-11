@@ -1,0 +1,41 @@
+name: Build & push image
+
+on:
+  push:
+    branches:
+      - master
+    paths:
+      - "**/*.py"
+      - requirements.txt
+      - Dockerfile
+      - .dockerignore
+      - .github/workflows/build-image.yaml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  AWS_REGION: us-west-2
+  ECR_REPO: 021451147547.dkr.ecr.us-west-2.amazonaws.com/bigeye-mcp-server
+
+jobs:
+  build-push:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
+
+      - uses: aws-actions/configure-aws-credentials@8df5847569e6427dd6c4fb1cf565c83acfa8afa7 # v4.2.1
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Build and push image
+        run: |
+          aws ecr get-login-password --region "$AWS_REGION" \
+            | docker login --username AWS --password-stdin "${ECR_REPO%/*}"
+          docker build -t "$ECR_REPO:$GITHUB_SHA" -t "$ECR_REPO:latest" .
+          docker push "$ECR_REPO:$GITHUB_SHA"
+          docker push "$ECR_REPO:latest"
