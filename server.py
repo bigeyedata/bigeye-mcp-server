@@ -19,6 +19,7 @@ from datetime import datetime, timedelta
 from auth import BigeyeAuthClient
 from bigeye_api import BigeyeAPIClient
 from config import config
+from request_credentials import current_credentials, normalize_url
 from lineage_tracker import AgentLineageTracker
 from telemetry import init_telemetry, instrument_tools
 
@@ -301,7 +302,10 @@ mcp = FastMCP(
                 Which one would you like me to check?"
 
     This ensures accuracy and prevents operations on the wrong database objects.
-    """
+    """,
+    host=os.environ.get("MCP_HOST", "0.0.0.0"),
+    port=int(os.environ.get("MCP_PORT", "8080")),
+    stateless_http=True,
 )
 
 # Debug function
@@ -416,7 +420,14 @@ if config.get("workspace_id"):
     )
 
 def get_api_client() -> BigeyeAPIClient:
-    """Get the API client"""
+    """Get the API client, using per-request credentials when present."""
+    creds = current_credentials.get(None)
+    if creds is not None:
+        return BigeyeAPIClient(
+            api_url=creds.get("url") or config["api_url"],
+            api_key=creds.get("api_key"),
+            workspace_id=creds.get("workspace_id"),
+        )
     return api_client
 
 # Authentication status resource
@@ -3950,6 +3961,53 @@ async def get_scan_findings(
         return {"error": True, "message": f"Error fetching scan findings: {str(e)}"}
 
 
+@mcp.custom_route("/health", methods=["GET"])
+async def health_check(request):
+    from starlette.responses import PlainTextResponse
+
+    return PlainTextResponse("ok")
+
+
+class PerRequestCredentialsMiddleware:
+    def __init__(self, app):
+        self.app = app
+
+    async def __call__(self, scope, receive, send):
+        if scope["type"] != "http":
+            await self.app(scope, receive, send)
+            return
+        headers = {
+            k.decode("latin-1").lower(): v.decode("latin-1")
+            for k, v in scope.get("headers", [])
+        }
+        token = None
+        auth = headers.get("authorization", "").strip()
+        if auth:
+            parts = auth.split(None, 1)
+            api_key = (parts[1] if len(parts) == 2 else parts[0]).strip()
+            ws_raw = headers.get("x-bigeye-workspace-id", "").strip()
+            token = current_credentials.set(
+                {
+                    "api_key": api_key,
+                    "workspace_id": int(ws_raw) if ws_raw.isdigit() else None,
+                    "url": normalize_url(headers.get("x-bigeye-url", "")),
+                }
+            )
+        try:
+            await self.app(scope, receive, send)
+        finally:
+            if token is not None:
+                current_credentials.reset(token)
+
+
 # Run the server if executed directly
 if __name__ == "__main__":
-    mcp.run()
+    transport = os.environ.get("MCP_TRANSPORT", "stdio")
+    if transport == "streamable-http":
+        import uvicorn
+
+        app = mcp.streamable_http_app()
+        app.add_middleware(PerRequestCredentialsMiddleware)
+        uvicorn.run(app, host=mcp.settings.host, port=mcp.settings.port)
+    else:
+        mcp.run(transport=transport)
