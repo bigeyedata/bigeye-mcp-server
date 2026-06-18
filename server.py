@@ -1031,6 +1031,10 @@ async def search_tables(
 ) -> Dict[str, Any]:
     """Search the Bigeye data catalog for tables by name. Returns matching tables with their internal IDs, schema, and warehouse context.
 
+    The returned `schemaName` is in `database.schema` format when the warehouse
+    has a database layer (e.g. Snowflake: "ANALYTICS.PUBLIC"); for warehouses
+    without a database, it is just the schema (e.g. "public").
+
     Args:
         query: The table name or partial name to search for (e.g. "orders", "customer")
         limit: Maximum number of results to return (default: 50)
@@ -1074,6 +1078,10 @@ async def search_columns(
     limit: int = 50,
 ) -> Dict[str, Any]:
     """Search the Bigeye data catalog for columns by name. Returns matching columns with their internal IDs, data type, and the table/schema/warehouse they belong to.
+
+    The returned `table.schemaName` is in `database.schema` format when the
+    warehouse has a database layer (e.g. Snowflake: "ANALYTICS.PUBLIC"); for
+    warehouses without a database, it is just the schema (e.g. "public").
 
     Args:
         query: The column name or partial name to search for (e.g. "email", "user_id")
