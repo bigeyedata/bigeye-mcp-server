@@ -25,7 +25,7 @@
 
 ## API Quirks
 
-- The `POST /api/v1/search` endpoint is broken — it ignores `searchString` and filter parameters, returning all issues in a fixed order. Only `limit` works. Catalog search tools are temporarily removed pending improvements (see ONE-12139).
+- The `POST /api/v1/search` endpoint is broken — it ignores `searchString` and filter parameters, returning all issues in a fixed order. Only `limit` works. Do not use it. Catalog search (`search_schemas`/`search_tables`/`search_columns`) is implemented on `POST /api/v2/search`, which honors the `search` query string, `types` filter, and `limit`. The v2 body uses protobuf-JSON: `{"search": "...", "types": [{"dataNodeType": "DATA_NODE_TYPE_TABLE"}], "limit": N}` — workspace comes from the `x-bigeye-workspace-id` header, not the body.
 - Workspace IDs must be integers, not strings
 - Some endpoints use camelCase, others use snake_case
 - Search endpoints require exact matches with underscores (e.g. `sales_dashboard` not `sales dashboard`)
