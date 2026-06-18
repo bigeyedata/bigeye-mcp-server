@@ -994,7 +994,7 @@ async def search_schemas(
         limit: Maximum number of results to return (default: 50)
     """
     client = get_api_client()
-    if not config.get('workspace_id'):
+    if not client.workspace_id:
         return {
             'error': 'Workspace ID not configured',
             'hint': 'Check your Claude Desktop configuration'
@@ -1040,7 +1040,7 @@ async def search_tables(
         limit: Maximum number of results to return (default: 50)
     """
     client = get_api_client()
-    if not config.get('workspace_id'):
+    if not client.workspace_id:
         return {
             'error': 'Workspace ID not configured',
             'hint': 'Check your Claude Desktop configuration'
@@ -1088,7 +1088,7 @@ async def search_columns(
         limit: Maximum number of results to return (default: 50)
     """
     client = get_api_client()
-    if not config.get('workspace_id'):
+    if not client.workspace_id:
         return {
             'error': 'Workspace ID not configured',
             'hint': 'Check your Claude Desktop configuration'
