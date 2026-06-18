@@ -982,8 +982,15 @@ async def search_schemas(
 ) -> Dict[str, Any]:
     """Search the Bigeye data catalog for schemas by name. Returns matching schemas with their internal IDs and warehouse context.
 
+    Schema names are in `database.schema` format when the warehouse has a
+    database layer (e.g. Snowflake: "ANALYTICS.PUBLIC"); for warehouses without a
+    database, the name is just the schema (e.g. "public"). Returned `name` values
+    follow the same convention.
+
     Args:
-        query: The schema name or partial name to search for (e.g. "sales", "public")
+        query: The schema name or partial name to search for. Include the database
+            prefix when applicable (e.g. "ANALYTICS.PUBLIC"), or search by just the
+            schema part (e.g. "public") for a broader match.
         limit: Maximum number of results to return (default: 50)
     """
     client = get_api_client()
