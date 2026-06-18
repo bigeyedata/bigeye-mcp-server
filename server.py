@@ -970,6 +970,148 @@ async def search_issues(
 
     return result
 
+# Catalog search tools. These use the v2 global-search endpoint
+# (POST /api/v2/search via client.catalog_search) which honors the query string,
+# type filters, and limit. Note: the internal resolve_table() helper and lineage
+# code still use the client's v1 search_tables/search_schemas/search_columns
+# methods (GET /api/v1/{tables,schemas,columns}) -- those are unchanged.
+@mcp.tool()
+async def search_schemas(
+    query: str,
+    limit: int = 50,
+) -> Dict[str, Any]:
+    """Search the Bigeye data catalog for schemas by name. Returns matching schemas with their internal IDs and warehouse context.
+
+    Args:
+        query: The schema name or partial name to search for (e.g. "sales", "public")
+        limit: Maximum number of results to return (default: 50)
+    """
+    client = get_api_client()
+    if not config.get('workspace_id'):
+        return {
+            'error': 'Workspace ID not configured',
+            'hint': 'Check your Claude Desktop configuration'
+        }
+
+    debug_print(f"Catalog schema search for: {query}")
+    response = await client.catalog_search(
+        search=query,
+        data_node_types=["DATA_NODE_TYPE_SCHEMA"],
+        limit=limit,
+    )
+    if response.get("error"):
+        return response
+
+    schemas = []
+    for result in response.get("results", []):
+        node = result.get("schemaNode")
+        if not node:
+            continue
+        schemas.append({
+            "id": node.get("id"),
+            "name": node.get("name"),
+            "warehouseId": node.get("warehouseId"),
+            "warehouseName": node.get("warehouseName"),
+        })
+
+    debug_print(f"Found {len(schemas)} schemas matching '{query}'")
+    return {"results": schemas, "count": len(schemas)}
+
+@mcp.tool()
+async def search_tables(
+    query: str,
+    limit: int = 50,
+) -> Dict[str, Any]:
+    """Search the Bigeye data catalog for tables by name. Returns matching tables with their internal IDs, schema, and warehouse context.
+
+    Args:
+        query: The table name or partial name to search for (e.g. "orders", "customer")
+        limit: Maximum number of results to return (default: 50)
+    """
+    client = get_api_client()
+    if not config.get('workspace_id'):
+        return {
+            'error': 'Workspace ID not configured',
+            'hint': 'Check your Claude Desktop configuration'
+        }
+
+    debug_print(f"Catalog table search for: {query}")
+    response = await client.catalog_search(
+        search=query,
+        data_node_types=["DATA_NODE_TYPE_TABLE"],
+        limit=limit,
+    )
+    if response.get("error"):
+        return response
+
+    tables = []
+    for result in response.get("results", []):
+        node = result.get("tableNode")
+        if not node:
+            continue
+        tables.append({
+            "id": node.get("id"),
+            "name": node.get("name"),
+            "schemaName": node.get("schemaName"),
+            "databaseName": node.get("databaseName"),
+            "warehouseId": node.get("warehouseId"),
+            "warehouseName": node.get("warehouseName"),
+        })
+
+    debug_print(f"Found {len(tables)} tables matching '{query}'")
+    return {"results": tables, "count": len(tables)}
+
+@mcp.tool()
+async def search_columns(
+    query: str,
+    limit: int = 50,
+) -> Dict[str, Any]:
+    """Search the Bigeye data catalog for columns by name. Returns matching columns with their internal IDs, data type, and the table/schema/warehouse they belong to.
+
+    Args:
+        query: The column name or partial name to search for (e.g. "email", "user_id")
+        limit: Maximum number of results to return (default: 50)
+    """
+    client = get_api_client()
+    if not config.get('workspace_id'):
+        return {
+            'error': 'Workspace ID not configured',
+            'hint': 'Check your Claude Desktop configuration'
+        }
+
+    debug_print(f"Catalog column search for: {query}")
+    response = await client.catalog_search(
+        search=query,
+        data_node_types=["DATA_NODE_TYPE_COLUMN"],
+        limit=limit,
+    )
+    if response.get("error"):
+        return response
+
+    columns = []
+    for result in response.get("results", []):
+        node = result.get("columnNode")
+        if not node:
+            continue
+        column = node.get("column") or {}
+        table = node.get("table") or {}
+        columns.append({
+            "column": {
+                "id": column.get("id"),
+                "name": column.get("name"),
+                "type": column.get("type"),
+            },
+            "table": {
+                "id": table.get("id"),
+                "name": table.get("name"),
+                "schemaName": table.get("schemaName"),
+                "warehouseName": table.get("warehouseName"),
+            },
+        })
+
+    debug_print(f"Found {len(columns)} columns matching '{query}'")
+    return {"results": columns, "count": len(columns)}
+
 @mcp.tool()
 async def list_related_issues(
     starting_issue_id: int

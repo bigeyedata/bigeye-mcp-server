@@ -1526,7 +1526,42 @@ class BigeyeAPIClient:
             method="GET",
             params=params
         )
-        
+
+    async def catalog_search(
+        self,
+        search: str,
+        data_node_types: Optional[List[str]] = None,
+        limit: Optional[int] = None,
+    ) -> Dict[str, Any]:
+        """Catalog/global search via POST /api/v2/search.
+
+        Unlike the broken /api/v1/search, this endpoint honors the query string,
+        type filters, and limit. The workspace is taken from the
+        x-bigeye-workspace-id header (set by make_request), not the body.
+
+        Args:
+            search: The query string to search for.
+            data_node_types: Optional list of DataNodeType enum names to filter by
+                (e.g. ["DATA_NODE_TYPE_TABLE"]).
+            limit: Optional maximum number of results to return.
+
+        Returns:
+            The raw SearchResponse: {"results": [{<oneOfKey>: {...}}, ...]}.
+        """
+        payload: Dict[str, Any] = {"search": search}
+        if data_node_types:
+            payload["types"] = [{"dataNodeType": t} for t in data_node_types]
+        if limit is not None:
+            payload["limit"] = limit
+
+        print(f"[BIGEYE API DEBUG] Catalog search payload: {payload}", file=sys.stderr)
+
+        return await self.make_request(
+            "/api/v2/search",
+            method="POST",
+            json_data=payload,
+        )
+
     async def get_table_level_metric_names(self) -> Dict[str, Any]:
         """Get the list of table-level metric names from the Bigeye API.
 

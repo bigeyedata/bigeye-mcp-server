@@ -194,6 +194,12 @@ To connect to multiple Bigeye instances (e.g. demo and production), create separ
 - **`list_data_classes`** — List data classification categories (e.g., "Email Address", "US SSN") with sensitivity levels
 - **`get_scan_findings`** — Get column-level classification scan results showing where sensitive data was detected
 
+### Data Catalog
+
+- **`search_schemas`** — Search the data catalog for schemas by name (returns ids + warehouse)
+- **`search_tables`** — Search the data catalog for tables by name (returns ids, schema + warehouse)
+- **`search_columns`** — Search the data catalog for columns by name (returns ids, type + parent table)
+
 ### Data Lineage
 
 - **`get_lineage_graph`** — Get the full lineage graph (upstream/downstream/both) from a starting node
