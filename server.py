@@ -324,7 +324,6 @@ debug_print(f"Telemetry {'enabled' if _telemetry.enabled else 'disabled'}")
 
 async def _resolve_table(
     client: BigeyeAPIClient,
-    workspace_id: int,
     table_name: str,
     schema_name: Optional[str] = None,
     include_columns: bool = False,
@@ -346,7 +345,6 @@ async def _resolve_table(
 
     # Attempt 1: search with both filters
     result = await client.search_tables(
-        workspace_id=workspace_id,
         table_name=uc_table,
         schema_names=[uc_schema] if uc_schema else None,
         include_columns=include_columns,
@@ -361,7 +359,6 @@ async def _resolve_table(
             "retrying without schema filter (suffix match)"
         )
         result = await client.search_tables(
-            workspace_id=workspace_id,
             table_name=uc_table,
             include_columns=include_columns,
         )
@@ -376,7 +373,6 @@ async def _resolve_table(
             f"Still no results; retrying with just table_name={uc_table}"
         )
         result = await client.search_tables(
-            workspace_id=workspace_id,
             table_name=uc_table,
             include_columns=include_columns,
         )
@@ -427,6 +423,7 @@ def get_api_client() -> BigeyeAPIClient:
             api_url=creds.get("url") or config["api_url"],
             api_key=creds.get("api_key"),
             workspace_id=creds.get("workspace_id"),
+            per_request=True,
         )
     return api_client
 
@@ -434,17 +431,18 @@ def get_api_client() -> BigeyeAPIClient:
 @mcp.resource("bigeye://auth/status")
 async def auth_status() -> str:
     """Current authentication status"""
-    workspace_id = config.get('workspace_id')
-    if not workspace_id or not config.get('api_key'):
+    client = get_api_client()
+    workspace_id = client.workspace_id
+    if not workspace_id or not client.api_key:
         return """ERROR: Bigeye credentials not configured.
-        
+
 Please configure credentials in your Claude Desktop config file.
 See README for setup instructions."""
-    
+
     return f"""Connected to Bigeye:
-- Instance: {config['api_url']}
+- Instance: {client.api_url}
 - Workspace ID: {workspace_id}
-- Status: ✓ Authenticated via environment variables"""
+- Status: ✓ Authenticated"""
 
 # Note: Dynamic authentication has been removed.
 # Credentials must be provided via environment variables.
@@ -480,12 +478,12 @@ def get_config_resource() -> Dict[str, Any]:
 async def get_issues_resource() -> Dict[str, Any]:
     """Get all issues from the configured workspace."""
     client = get_api_client()
-    workspace_id = config.get('workspace_id')
+    workspace_id = client.workspace_id
     if not workspace_id:
         return {"error": "No workspace ID configured"}
-    
+
     debug_print(f"Fetching all issues for workspace {workspace_id}")
-    result = await client.fetch_issues(workspace_id=workspace_id)
+    result = await client.fetch_issues()
     
     issue_count = len(result.get("issues", []))
     debug_print(f"Found {issue_count} issues")
@@ -500,15 +498,14 @@ async def get_active_issues_resource() -> Dict[str, Any]:
     Provides a focused view of current problems that need attention.
     """
     client = get_api_client()
-    workspace_id = config.get('workspace_id')
+    workspace_id = client.workspace_id
     if not workspace_id:
         return {"error": "No workspace ID configured"}
-    
+
     debug_print(f"Fetching active issues for workspace {workspace_id}")
-    
+
     # Fetch only NEW and ACKNOWLEDGED issues
     result = await client.fetch_issues(
-        workspace_id=workspace_id,
         currentStatus=["ISSUE_STATUS_NEW", "ISSUE_STATUS_ACKNOWLEDGED"],
         page_size=50,  # Limit to most recent 50 active issues
         include_full_history=False  # Keep response size manageable
@@ -599,15 +596,14 @@ async def get_recent_issues_resource() -> Dict[str, Any]:
     to help track resolution patterns and recent activity.
     """
     client = get_api_client()
-    workspace_id = config.get('workspace_id')
+    workspace_id = client.workspace_id
     if not workspace_id:
         return {"error": "No workspace ID configured"}
-    
+
     debug_print(f"Fetching recent issues for workspace {workspace_id}")
-    
+
     # Fetch all issues (we'll filter by date client-side since the API doesn't have date filters)
     result = await client.fetch_issues(
-        workspace_id=workspace_id,
         page_size=100,  # Get more issues to ensure we have recent ones
         include_full_history=False
     )
@@ -866,17 +862,9 @@ async def list_issues(
     """
 
     client = get_api_client()
-    workspace_id = config.get('workspace_id')
 
-    # Safety check
-    if not workspace_id:
-        return {
-            'error': 'Workspace ID not configured',
-            'hint': 'Check your Claude Desktop configuration'
-        }
-
-    debug_print(f"Fetching issues for workspace {workspace_id}")
-    debug_print(f"Config state - Instance: {config['api_url']}, Workspace: {workspace_id}, Has API key: {bool(config.get('api_key'))}")
+    debug_print(f"Fetching issues for workspace {client.workspace_id}")
+    debug_print(f"Config state - Instance: {client.api_url}, Workspace: {client.workspace_id}, Has API key: {bool(client.api_key)}")
     debug_print(f"compact={compact}, max_issues={max_issues}")
 
     if statuses:
@@ -887,7 +875,6 @@ async def list_issues(
         debug_print(f"Filtering by assignee IDs: {assignee_ids}")
 
     result = await client.fetch_issues(
-        workspace_id=workspace_id,
         currentStatus=statuses,
         schemaNames=schema_names,
         assigneeIds=assignee_ids,
@@ -943,14 +930,6 @@ async def search_issues(
     """
 
     client = get_api_client()
-    workspace_id = config.get('workspace_id')
-
-    # Safety check
-    if not workspace_id:
-        return {
-            'error': 'Workspace ID not configured',
-            'hint': 'Check your Claude Desktop configuration'
-        }
 
     debug_print(f"Searching for issues with name: {name_query}")
     debug_print(f"Exact match: {exact_match}")
@@ -959,7 +938,6 @@ async def search_issues(
         debug_print(f"Filtering by statuses: {statuses}")
 
     result = await client.search_issues_by_name(
-        workspace_id=workspace_id,
         name_query=name_query,
         statuses=statuses,
         exact_match=exact_match
@@ -994,12 +972,6 @@ async def search_schemas(
         limit: Maximum number of results to return (default: 50)
     """
     client = get_api_client()
-    if not client.workspace_id:
-        return {
-            'error': 'Workspace ID not configured',
-            'hint': 'Check your Claude Desktop configuration'
-        }
-
     debug_print(f"Catalog schema search for: {query}")
     response = await client.catalog_search(
         search=query,
@@ -1040,12 +1012,6 @@ async def search_tables(
         limit: Maximum number of results to return (default: 50)
     """
     client = get_api_client()
-    if not client.workspace_id:
-        return {
-            'error': 'Workspace ID not configured',
-            'hint': 'Check your Claude Desktop configuration'
-        }
-
     debug_print(f"Catalog table search for: {query}")
     response = await client.catalog_search(
         search=query,
@@ -1088,12 +1054,6 @@ async def search_columns(
         limit: Maximum number of results to return (default: 50)
     """
     client = get_api_client()
-    if not client.workspace_id:
-        return {
-            'error': 'Workspace ID not configured',
-            'hint': 'Check your Claude Desktop configuration'
-        }
-
     debug_print(f"Catalog column search for: {query}")
     response = await client.catalog_search(
         search=query,
@@ -1165,20 +1125,11 @@ async def list_table_issues(
     """
     
     client = get_api_client()
-    workspace_id = config.get('workspace_id')
-    
-    # Safety check
-    if not workspace_id:
-        return {
-            'error': 'Workspace ID not set',
-            'hint': 'Authentication may be incomplete. Try re-authenticating.'
-        }
-    
-    debug_print(f"Fetching issues for table {table_name} in workspace {workspace_id}")
-    
+
+    debug_print(f"Fetching issues for table {table_name} in workspace {client.workspace_id}")
+
     try:
         result = await client.get_issues_for_table(
-            workspace_id=workspace_id,
             table_name=table_name,
             warehouse_name=warehouse_name,
             schema_name=schema_name,
@@ -1250,7 +1201,6 @@ async def create_incident(
     try:
         result = await client.merge_issues(
             issue_ids=issue_ids,
-            workspace_id=config.get('workspace_id'),
             existing_incident_id=existing_incident_id,
             incident_name=incident_name
         )
@@ -1361,11 +1311,10 @@ async def delete_incident_members(
         }
     
     client = get_api_client()
-    debug_print(f"Unmerging issues in workspace {config.get('workspace_id')}")
-    
+    debug_print(f"Unmerging issues in workspace {client.workspace_id}")
+
     try:
         result = await client.unmerge_issues(
-            workspace_id=config.get('workspace_id'),
             issue_ids=issue_ids,
             parent_issue_ids=parent_issue_ids,
             assignee_id=assignee_id,
@@ -1391,26 +1340,18 @@ async def list_table_metrics(
         schema_name: Optional schema name to narrow the search
     """
     client = get_api_client()
-    workspace_id = config.get('workspace_id')
-
-    if not workspace_id:
-        return {
-            'error': 'Workspace ID not configured',
-            'hint': 'Check your Claude Desktop configuration'
-        }
 
     debug_print(f"Fetching metrics for table {table_name}")
 
     try:
         # Resolve table name → table ID (GET /api/v1/metrics requires tableIds, not tableName)
-        table = await _resolve_table(client, workspace_id, table_name, schema_name)
+        table = await _resolve_table(client, table_name, schema_name)
         if table.get("error"):
             return table
 
         table_id = table["id"]
 
         result = await client.get_table_metrics(
-            workspace_id=workspace_id,
             table_ids=[table_id],
         )
 
@@ -1458,18 +1399,11 @@ async def list_table_metrics(
 async def list_data_sources() -> Dict[str, Any]:
     """List all data sources (warehouses) connected to Bigeye. Returns source names, types (SNOWFLAKE, DATABRICKS, etc.), and connection details. Prefer list_sources (knowledgebase) for faster cached results."""
     client = get_api_client()
-    workspace_id = config.get('workspace_id')
-
-    if not workspace_id:
-        return {
-            'error': 'Workspace ID not configured',
-            'hint': 'Check your Claude Desktop configuration'
-        }
 
     debug_print("Fetching data sources")
 
     try:
-        result = await client.get_sources(workspace_id=workspace_id)
+        result = await client.get_sources()
         return result
     except Exception as e:
         return {
@@ -2351,41 +2285,31 @@ async def search_lineage_nodes(
         node_type: Optional node type filter: "DATA_NODE_TYPE_TABLE", "DATA_NODE_TYPE_COLUMN", "DATA_NODE_TYPE_CUSTOM"
         limit: Maximum number of results to return (default: 20)
     """
-    # Use configured workspace_id if not provided
-    if workspace_id is None:
-        workspace_id = config.get('workspace_id')
-        if not workspace_id:
+    client = get_api_client()
+    if not client:
+        return {'error': 'Failed to get API client'}
+
+    # If the caller supplied a workspace_id, coerce it to int; otherwise the
+    # client resolves it from the per-request header / configured workspace.
+    if workspace_id is not None:
+        try:
+            workspace_id = int(workspace_id)
+        except (ValueError, TypeError):
             return {
-                'error': 'Workspace ID not configured',
-                'hint': 'Check your Claude Desktop configuration for BIGEYE_WORKSPACE_ID'
+                "error": True,
+                "message": f"workspace_id must be a valid integer, got: {workspace_id} (type: {type(workspace_id)})"
             }
-    
+
     # Enhanced debug logging
     debug_print(f"=== search_lineage_nodes called ===")
-    debug_print(f"  workspace_id: {workspace_id} (type: {type(workspace_id)})")
+    debug_print(f"  workspace_id (override): {workspace_id}")
+    debug_print(f"  client.workspace_id: {client.workspace_id}")
     debug_print(f"  search_string: '{search_string}'")
     debug_print(f"  node_type: {node_type}")
     debug_print(f"  limit: {limit}")
     debug_print(f"  auth_client.is_authenticated: {auth_client.is_authenticated}")
-    debug_print(f"  config.get('workspace_id'): {config.get('workspace_id')}")
-    
-    
-    client = get_api_client()
-    if not client:
-        return {'error': 'Failed to get API client'}
-    
-    # Ensure workspace_id is an integer
-    try:
-        workspace_id = int(workspace_id)
-        debug_print(f"Converted workspace_id to int: {workspace_id}")
-    except (ValueError, TypeError) as e:
-        error_msg = f"workspace_id must be a valid integer, got: {workspace_id} (type: {type(workspace_id)})"
-        debug_print(f"ERROR: {error_msg}")
-        return {
-            "error": True,
-            "message": error_msg
-        }
-        
+
+
     try:
         # Normalize the search string (trim whitespace around slashes)
         normalized_search = search_string.strip().replace(' / ', '/').replace('/ ', '/').replace(' /', '/')
@@ -2505,7 +2429,6 @@ async def lineage_explore_catalog(
     try:
         # Get tables from catalog
         result = await client.get_catalog_tables(
-            workspace_id=config.get('workspace_id'),
             schema_name=schema_name,
             warehouse_name=warehouse_name,
             page_size=page_size
@@ -3013,14 +2936,6 @@ async def create_metric(
         group_bys: Optional list of column names to group by
     """
     client = get_api_client()
-    workspace_id = config.get("workspace_id")
-
-    # 1. Check workspace_id
-    if not workspace_id:
-        return {
-            "error": "Workspace ID not configured",
-            "hint": "Check your Claude Desktop configuration for BIGEYE_WORKSPACE_ID",
-        }
 
     # 2. Validate metric_type
     metric_upper = metric_type.upper()
@@ -3096,13 +3011,11 @@ async def create_metric(
     try:
         if table_id:
             table_result = await client.fetch_tables(
-                workspace_id=workspace_id,
                 table_ids=[table_id],
                 include_columns=True,
             )
         else:
             table_result = await client.search_tables(
-                workspace_id=workspace_id,
                 table_name=table_name,
                 schema_names=[schema_name] if schema_name else None,
                 include_columns=True,
@@ -3231,13 +3144,6 @@ async def _compute_dimension_coverage(
     ambiguous name-based lookups). Otherwise falls back to name search.
     """
     client = get_api_client()
-    workspace_id = config.get("workspace_id")
-
-    if not workspace_id:
-        return {
-            "error": "Workspace ID not configured",
-            "hint": "Check your Claude Desktop configuration",
-        }
 
     debug_print(f"Computing dimension coverage for table {table_name or table_id}")
 
@@ -3282,7 +3188,6 @@ async def _compute_dimension_coverage(
         # 3. Fetch column metadata — by ID if available, otherwise name search
         if table_id:
             table_result = await client.fetch_tables(
-                workspace_id=workspace_id,
                 table_ids=[table_id],
                 include_columns=True,
             )
@@ -3292,7 +3197,7 @@ async def _compute_dimension_coverage(
             table = tables[0]
         else:
             table = await _resolve_table(
-                client, workspace_id, table_name, schema_name, include_columns=True,
+                client, table_name, schema_name, include_columns=True,
             )
             if table.get("error"):
                 return table
@@ -3316,7 +3221,6 @@ async def _compute_dimension_coverage(
         if not table_id:
             return {"error": f"Table '{table_name}' found but has no ID"}
         metrics_result = await client.get_table_metrics(
-            workspace_id=workspace_id,
             table_ids=[table_id],
         )
         metrics = metrics_result.get("metrics", [])
@@ -3864,18 +3768,10 @@ async def list_data_classes(
         Dictionary containing data classes with their names, sensitivity levels, and descriptions
     """
     client = get_api_client()
-    workspace_id = config.get("workspace_id")
-
-    if not workspace_id:
-        return {
-            "error": "Workspace ID not configured",
-            "hint": "Check your Claude Desktop configuration for BIGEYE_WORKSPACE_ID",
-        }
 
     try:
         debug_print(f"Fetching data classes (search={search}, sensitivities={sensitivities})")
         result = await client.fetch_data_classes(
-            workspace_id=workspace_id,
             search=search,
             sensitivities=sensitivities,
             page_size=page_size,
@@ -3942,13 +3838,9 @@ async def get_table_sensitivity_findings(
         page_cursor: Pagination cursor from a previous response
     """
     client = get_api_client()
-    workspace_id = config.get("workspace_id")
-
-    if not workspace_id:
-        return {"error": True, "message": "Workspace ID not configured"}
 
     try:
-        table = await _resolve_table(client, workspace_id, table_name, schema_name)
+        table = await _resolve_table(client, table_name, schema_name)
         if table.get("error"):
             return table
 
@@ -3971,7 +3863,6 @@ async def get_table_sensitivity_findings(
 
         if finding_type == "snapshot":
             result = await client.fetch_snapshot_findings(
-                workspace_id=int(workspace_id),
                 table_ids=[table_id],
                 sensitivities=normalized_sensitivities,
                 positive_or_negative_findings=positive_or_negative,
@@ -3980,7 +3871,6 @@ async def get_table_sensitivity_findings(
             )
         else:
             result = await client.fetch_scan_findings(
-                workspace_id=int(workspace_id),
                 table_ids=[table_id],
                 sensitivities=normalized_sensitivities,
                 positive_or_negative_findings=positive_or_negative,
@@ -4047,20 +3937,12 @@ async def get_scan_findings(
         page_cursor: Cursor for pagination
     """
     client = get_api_client()
-    workspace_id = config.get("workspace_id")
-
-    if not workspace_id:
-        return {
-            "error": "Workspace ID not configured",
-            "hint": "Check your Claude Desktop configuration for BIGEYE_WORKSPACE_ID",
-        }
 
     positive_or_negative = "TRUE" if positive_only else None
 
     try:
         if finding_type == "snapshot":
             result = await client.fetch_snapshot_findings(
-                workspace_id=workspace_id,
                 table_ids=table_ids,
                 column_ids=column_ids,
                 data_class_ids=data_class_ids,
@@ -4071,7 +3953,6 @@ async def get_scan_findings(
             )
         else:
             result = await client.fetch_scan_findings(
-                workspace_id=workspace_id,
                 table_ids=table_ids,
                 column_ids=column_ids,
                 data_class_ids=data_class_ids,

@@ -13,18 +13,36 @@ from telemetry import SERVER_VERSION, trace_propagation_headers
 class BigeyeAPIClient:
     """Client for interacting with the Bigeye API."""
     
-    def __init__(self, api_url: str = "https://staging.bigeye.com", api_key: Optional[str] = None, workspace_id: Optional[int] = None):
+    def __init__(self, api_url: str = "https://staging.bigeye.com", api_key: Optional[str] = None, workspace_id: Optional[int] = None, per_request: bool = False):
         """Initialize the Bigeye API client.
-        
+
         Args:
             api_url: The URL of the Bigeye API
             api_key: The API key for authentication
             workspace_id: The workspace ID to use for API requests
+            per_request: True when the client was built from per-request HTTP
+                credentials (headers); False for the env-configured global client.
+                Only affects the error message when no workspace ID is available.
         """
         self.api_url = api_url
         self.api_key = api_key
         self.workspace_id = workspace_id
-    
+        self.per_request = per_request
+
+    def _resolve_workspace_id(self, workspace_id: Optional[int] = None) -> int:
+        """Resolve the workspace ID for a request: an explicit argument wins,
+        otherwise fall back to the client's workspace (per-request header or env).
+        Raises a transport-specific error if neither is set."""
+        ws = workspace_id if workspace_id is not None else self.workspace_id
+        if not ws:
+            hint = (
+                "Send a valid integer in the x-bigeye-workspace-id request header."
+                if self.per_request
+                else "Set the BIGEYE_WORKSPACE_ID environment variable."
+            )
+            raise ValueError(f"Workspace ID not configured. {hint}")
+        return int(ws)
+
     async def make_request(
         self, 
         path: str, 
@@ -194,7 +212,7 @@ class BigeyeAPIClient:
 
     async def fetch_issues(
         self,
-        workspace_id: int,
+        workspace_id: Optional[int] = None,
         currentStatus: Optional[List[str]] = None,
         schemaNames: Optional[List[str]] = None,
         assigneeIds: Optional[List[int]] = None,
@@ -227,6 +245,7 @@ class BigeyeAPIClient:
         Returns:
             Dictionary containing the issues
         """
+        workspace_id = self._resolve_workspace_id(workspace_id)
         payload = {
             "workspaceId": workspace_id
         }
@@ -397,10 +416,10 @@ class BigeyeAPIClient:
 
     async def search_issues_by_name(
         self,
-        workspace_id: int,
         name_query: str,
         statuses: Optional[List[str]] = None,
-        exact_match: bool = False
+        exact_match: bool = False,
+        workspace_id: Optional[int] = None
     ) -> Dict[str, Any]:
         """Search for issues by their name field (display name/reference).
 
@@ -409,15 +428,16 @@ class BigeyeAPIClient:
         not the internal 'id' field.
 
         Args:
-            workspace_id: The ID of the workspace to search in
             name_query: The name (or partial name) to search for
             statuses: Optional list of issue statuses to filter by
             exact_match: If True, only return exact name matches. If False (default),
                         returns partial matches (case-insensitive)
+            workspace_id: The ID of the workspace to search in
 
         Returns:
             Dictionary containing matching issues with essential metadata
         """
+        workspace_id = self._resolve_workspace_id(workspace_id)
         print(f"[BIGEYE API DEBUG] Searching for issues with name containing: {name_query}", file=sys.stderr)
 
         # Fetch all issues with the given status filters
@@ -458,21 +478,22 @@ class BigeyeAPIClient:
     async def merge_issues(
         self,
         issue_ids: List[int],
-        workspace_id: int,
+        workspace_id: Optional[int] = None,
         existing_incident_id: Optional[int] = None,
         incident_name: Optional[str] = None
     ) -> Dict[str, Any]:
         """Merge multiple issues into a single incident.
-        
+
         Args:
             issue_ids: List of issue IDs to merge
             workspace_id: The ID of the workspace containing the issues
             existing_incident_id: Optional ID of an existing incident to merge issues into
             incident_name: Optional name for the incident (new or existing)
-            
+
         Returns:
             Dictionary containing the merge response with the created/updated incident
         """
+        workspace_id = self._resolve_workspace_id(workspace_id)
         # Build the where clause with issue IDs and workspace ID
         where_clause = {
             "ids": issue_ids,
@@ -649,7 +670,7 @@ class BigeyeAPIClient:
         
     async def unmerge_issues(
         self,
-        workspace_id: int,
+        workspace_id: Optional[int] = None,
         issue_ids: Optional[List[int]] = None,
         parent_issue_ids: Optional[List[int]] = None,
         assignee_id: Optional[int] = None,
@@ -671,6 +692,7 @@ class BigeyeAPIClient:
         Returns:
             Dictionary containing the unmerge response
         """
+        workspace_id = self._resolve_workspace_id(workspace_id)
         # Build the where clause
         where_clause = {
             "workspaceId": workspace_id
@@ -821,13 +843,14 @@ class BigeyeAPIClient:
         Returns:
             Dictionary containing the created node details
         """
+        workspace_id = self._resolve_workspace_id(workspace_id)
         payload = {
             "nodeType": node_type,
             "nodeName": node_name,
             "nodeContainerName": node_container_name,
             "rebuildGraph": rebuild_graph
         }
-        
+
         if workspace_id is not None:
             payload["workspaceId"] = workspace_id
             
@@ -1114,22 +1137,23 @@ class BigeyeAPIClient:
         
     async def get_catalog_tables(
         self,
-        workspace_id: int,
+        workspace_id: Optional[int] = None,
         schema_name: Optional[str] = None,
         warehouse_name: Optional[str] = None,
         page_size: int = 100
     ) -> Dict[str, Any]:
         """Get tables from Bigeye's catalog.
-        
+
         Args:
             workspace_id: The workspace ID
             schema_name: Optional schema name to filter by
             warehouse_name: Optional warehouse name to filter by
             page_size: Number of results per page
-            
+
         Returns:
             Dictionary containing catalog tables
         """
+        workspace_id = self._resolve_workspace_id(workspace_id)
         payload = {
             "workspaceId": workspace_id,
             "pageSize": page_size
@@ -1149,24 +1173,25 @@ class BigeyeAPIClient:
         
     async def get_issues_for_table(
         self,
-        workspace_id: int,
         table_name: str,
         warehouse_name: Optional[str] = None,
         schema_name: Optional[str] = None,
-        currentStatus: Optional[List[str]] = None
+        currentStatus: Optional[List[str]] = None,
+        workspace_id: Optional[int] = None
     ) -> Dict[str, Any]:
         """Get issues for a specific table.
-        
+
         Args:
-            workspace_id: The workspace ID
             table_name: Table name to filter by
             warehouse_name: Optional warehouse name
             schema_name: Optional schema name
             currentStatus: Optional list of issue statuses
-            
+            workspace_id: The workspace ID
+
         Returns:
             Dictionary containing issues for the table
         """
+        workspace_id = self._resolve_workspace_id(workspace_id)
         # First, try to find the table in the catalog
         catalog_result = await self.get_catalog_tables(
             workspace_id=workspace_id,
@@ -1283,7 +1308,7 @@ class BigeyeAPIClient:
         
     async def get_table_metrics(
         self,
-        workspace_id: int,
+        workspace_id: Optional[int] = None,
         table_ids: Optional[List[int]] = None,
         schema_ids: Optional[List[int]] = None,
         source_ids: Optional[List[int]] = None,
@@ -1305,6 +1330,7 @@ class BigeyeAPIClient:
         Returns:
             Dictionary containing metrics matching the filters
         """
+        workspace_id = self._resolve_workspace_id(workspace_id)
         params: Dict[str, Any] = {
             "workspaceId": workspace_id,
             "pageSize": page_size,
@@ -1333,7 +1359,7 @@ class BigeyeAPIClient:
 
     async def get_sources(
         self,
-        workspace_id: int
+        workspace_id: Optional[int] = None
     ) -> Dict[str, Any]:
         """Get all data sources (warehouses) connected to the workspace.
 
@@ -1343,6 +1369,7 @@ class BigeyeAPIClient:
         Returns:
             Dictionary containing list of data sources
         """
+        workspace_id = self._resolve_workspace_id(workspace_id)
         return await self.make_request(
             f"/api/v1/workspaces/{workspace_id}/sources",
             method="GET"
@@ -1376,24 +1403,25 @@ class BigeyeAPIClient:
     
     async def search_schemas(
         self,
-        workspace_id: int,
+        workspace_id: Optional[int] = None,
         schema_name: Optional[str] = None,
         warehouse_ids: Optional[List[int]] = None
     ) -> Dict[str, Any]:
         """Search for schemas in Bigeye.
-        
+
         Args:
             workspace_id: Required workspace ID for the search
             schema_name: Optional schema name to filter by (supports partial matching)
             warehouse_ids: Optional list of warehouse IDs to filter by
-            
+
         Returns:
             Dictionary containing schemas
         """
+        workspace_id = self._resolve_workspace_id(workspace_id)
         params = {
             "workspaceId": workspace_id
         }
-        
+
         if schema_name:
             params["schema"] = schema_name
             
@@ -1410,28 +1438,29 @@ class BigeyeAPIClient:
     
     async def search_tables(
         self,
-        workspace_id: int,
+        workspace_id: Optional[int] = None,
         table_name: Optional[str] = None,
         schema_names: Optional[List[str]] = None,
         warehouse_ids: Optional[List[int]] = None,
         include_columns: bool = False
     ) -> Dict[str, Any]:
         """Search for tables in Bigeye.
-        
+
         Args:
             workspace_id: Required workspace ID for the search
             table_name: Optional table name to filter by (supports partial matching)
             schema_names: Optional list of schema names to filter by
             warehouse_ids: Optional list of warehouse IDs to filter by
             include_columns: Whether to include column information in the response
-            
+
         Returns:
             Dictionary containing tables
         """
+        workspace_id = self._resolve_workspace_id(workspace_id)
         params = {
             "workspaceId": workspace_id
         }
-        
+
         if table_name:
             params["tableName"] = table_name
             
@@ -1454,20 +1483,21 @@ class BigeyeAPIClient:
     
     async def fetch_tables(
         self,
-        workspace_id: int,
         table_ids: List[int],
-        include_columns: bool = False
+        include_columns: bool = False,
+        workspace_id: Optional[int] = None
     ) -> Dict[str, Any]:
         """Fetch specific tables by ID.
 
         Args:
-            workspace_id: Required workspace ID
             table_ids: List of table IDs to fetch
             include_columns: Whether to include column information
+            workspace_id: Required workspace ID
 
         Returns:
             Dictionary containing tables
         """
+        workspace_id = self._resolve_workspace_id(workspace_id)
         payload: Dict[str, Any] = {
             "workspaceId": workspace_id,
             "tableIds": table_ids,
@@ -1485,28 +1515,29 @@ class BigeyeAPIClient:
 
     async def search_columns(
         self,
-        workspace_id: int,
+        workspace_id: Optional[int] = None,
         column_name: Optional[str] = None,
         table_names: Optional[List[str]] = None,
         schema_names: Optional[List[str]] = None,
         warehouse_ids: Optional[List[int]] = None
     ) -> Dict[str, Any]:
         """Search for columns in Bigeye.
-        
+
         Args:
             workspace_id: Required workspace ID for the search
             column_name: Optional column name to filter by (supports partial matching)
             table_names: Optional list of table names to filter by
             schema_names: Optional list of schema names to filter by
             warehouse_ids: Optional list of warehouse IDs to filter by
-            
+
         Returns:
             Dictionary containing columns
         """
+        workspace_id = self._resolve_workspace_id(workspace_id)
         params = {
             "workspaceId": workspace_id
         }
-        
+
         if column_name:
             params["columnName"] = column_name
             
@@ -1548,6 +1579,9 @@ class BigeyeAPIClient:
         Returns:
             The raw SearchResponse: {"results": [{<oneOfKey>: {...}}, ...]}.
         """
+        # Workspace travels in the x-bigeye-workspace-id header (added by
+        # make_request from self.workspace_id); validate it's present.
+        self._resolve_workspace_id()
         payload: Dict[str, Any] = {"search": search}
         if data_node_types:
             payload["types"] = [{"dataNodeType": t} for t in data_node_types]
@@ -1805,7 +1839,7 @@ class BigeyeAPIClient:
     async def search_lineage_v2(
         self,
         search_string: str,
-        workspace_id: int,
+        workspace_id: Optional[int] = None,
         limit: int = 100
     ) -> Dict[str, Any]:
         """Search for lineage nodes using the v2 search API.
@@ -1829,6 +1863,7 @@ class BigeyeAPIClient:
             - "CUSTOMER*" - Find all objects starting with CUSTOMER
             - "PROD_REPL/DIM_CUSTOMER/CUSTOMER_ID" - Find specific column
         """
+        workspace_id = self._resolve_workspace_id(workspace_id)
         print(f"[BIGEYE API DEBUG] === search_lineage_v2 called ===", file=sys.stderr)
         print(f"[BIGEYE API DEBUG] Parameters:", file=sys.stderr)
         print(f"[BIGEYE API DEBUG]   search_string: '{search_string}' (type: {type(search_string)})", file=sys.stderr)
@@ -1868,7 +1903,7 @@ class BigeyeAPIClient:
 
     async def fetch_data_classes(
         self,
-        workspace_id: int,
+        workspace_id: Optional[int] = None,
         search: Optional[str] = None,
         sensitivities: Optional[List[str]] = None,
         page_size: Optional[int] = None,
@@ -1883,6 +1918,7 @@ class BigeyeAPIClient:
             page_size: Optional number of results per page
             page_cursor: Optional pagination cursor
         """
+        workspace_id = self._resolve_workspace_id(workspace_id)
         payload: Dict[str, Any] = {
             "workspaceId": workspace_id,
         }
@@ -1903,7 +1939,7 @@ class BigeyeAPIClient:
 
     async def fetch_scan_findings(
         self,
-        workspace_id: int,
+        workspace_id: Optional[int] = None,
         table_ids: Optional[List[int]] = None,
         column_ids: Optional[List[int]] = None,
         data_class_ids: Optional[List[int]] = None,
@@ -1926,6 +1962,7 @@ class BigeyeAPIClient:
             page_size: Optional number of results per page
             page_cursor: Optional pagination cursor
         """
+        workspace_id = self._resolve_workspace_id(workspace_id)
         payload: Dict[str, Any] = {
             "workspaceId": workspace_id,
         }
@@ -1954,7 +1991,7 @@ class BigeyeAPIClient:
 
     async def fetch_snapshot_findings(
         self,
-        workspace_id: int,
+        workspace_id: Optional[int] = None,
         table_ids: Optional[List[int]] = None,
         column_ids: Optional[List[int]] = None,
         schema_ids: Optional[List[int]] = None,
@@ -1973,6 +2010,7 @@ class BigeyeAPIClient:
         Unlike aggregate findings (current state across all runs), snapshot findings
         show results from specific scan runs.
         """
+        workspace_id = self._resolve_workspace_id(workspace_id)
         payload: Dict[str, Any] = {"workspaceId": workspace_id}
         if table_ids:
             payload["tableIds"] = table_ids
