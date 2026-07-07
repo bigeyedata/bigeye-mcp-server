@@ -216,6 +216,7 @@ class BigeyeAPIClient:
         currentStatus: Optional[List[str]] = None,
         schemaNames: Optional[List[str]] = None,
         assigneeIds: Optional[List[int]] = None,
+        collection_ids: Optional[List[int]] = None,
         page_size: Optional[int] = None,
         page_cursor: Optional[str] = None,
         include_full_history: bool = False,
@@ -231,6 +232,10 @@ class BigeyeAPIClient:
             schemaNames: Optional list of schema names to filter issues by
             assigneeIds: Optional list of integer user IDs to filter issues by assignee.
                 Use fetch_current_user() to resolve the current user's ID.
+            collection_ids: Optional list of Bigeye collection IDs to filter issues by.
+                Resolve collection names to IDs with fetch_collections() first.
+                NOTE: the underlying API field is `slaIds` (collections were formerly
+                called SLAs); that mapping is contained to the payload block below.
             page_size: Optional number of issues to return per page
             page_cursor: Cursor for pagination
             include_full_history: If False, strips out historical metric runs to reduce data size
@@ -265,6 +270,13 @@ class BigeyeAPIClient:
 
         if assigneeIds:
             payload["assigneeIds"] = assigneeIds
+
+        # Collection filter. The API field is `slaIds` for legacy reasons: collections
+        # were formerly called "SLAs" and the field was never renamed. We expose the
+        # modern term ("collection") everywhere else and contain the legacy name to
+        # this single line.
+        if collection_ids:
+            payload["slaIds"] = collection_ids
 
         if page_cursor:
             payload["pageCursor"] = page_cursor
@@ -1357,6 +1369,55 @@ class BigeyeAPIClient:
             result = {"metrics": result}
         return result
 
+    async def get_metric_info(
+        self,
+        workspace_id: Optional[int] = None,
+        table_ids: Optional[List[int]] = None,
+        warehouse_ids: Optional[List[int]] = None,
+        page_size: int = 1000,
+    ) -> Dict[str, Any]:
+        """Fetch metric info (configuration + latest run state) via GET /api/v1/metrics/info.
+
+        Unlike GET /api/v1/metrics (configurations only), each entry here also
+        carries the metric's health: `status` (METRIC_RUN_STATUS_*),
+        `metricMetadata.currentMetricStatus` (METRIC_STATUS_HEALTHY/ALERTING),
+        `latestMetricRuns` (last run time + observed value), and `activeIssue`.
+
+        API quirks (verified against demo stack):
+        - The warehouse filter param is `warehouseIds`; `sourceIds` is silently
+          ignored on this endpoint (unlike GET /api/v1/metrics).
+        - There is no server-side schema filter — schemaIds/schemaName params are
+          ignored. Filter client-side on metricMetadata.schemaName.
+
+        Args:
+            workspace_id: The workspace ID
+            table_ids: Optional list of table IDs to filter by
+            warehouse_ids: Optional list of warehouse (source) IDs to filter by
+            page_size: Number of results per page (default 1000)
+
+        Returns:
+            Dictionary with "metrics" list and "paginationInfo"
+        """
+        workspace_id = self._resolve_workspace_id(workspace_id)
+        params: Dict[str, Any] = {
+            "workspaceId": workspace_id,
+            "pageSize": page_size,
+        }
+
+        if table_ids:
+            params["tableIds"] = table_ids
+        if warehouse_ids:
+            params["warehouseIds"] = warehouse_ids
+
+        result = await self.make_request(
+            "/api/v1/metrics/info",
+            method="GET",
+            params=params
+        )
+        if isinstance(result, list):
+            result = {"metrics": result}
+        return result
+
     async def get_sources(
         self,
         workspace_id: Optional[int] = None
@@ -1372,6 +1433,25 @@ class BigeyeAPIClient:
         workspace_id = self._resolve_workspace_id(workspace_id)
         return await self.make_request(
             f"/api/v1/workspaces/{workspace_id}/sources",
+            method="GET"
+        )
+
+    async def fetch_collections(self) -> Dict[str, Any]:
+        """Fetch all collections in the workspace.
+
+        Collections are curated groups of metrics (data products, domains, etc.).
+        Use this to resolve a collection name to its ID for issue filtering via
+        fetch_issues(collection_ids=[...]).
+
+        The workspace is taken from the x-bigeye-workspace-id header that
+        make_request() injects, matching the rest of the client.
+
+        Returns:
+            Dictionary containing the list of collections, each with id, name,
+            description, and metricIds.
+        """
+        return await self.make_request(
+            "/api/v1/collections",
             method="GET"
         )
 
