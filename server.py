@@ -1467,7 +1467,9 @@ async def get_dataset_health_summary(
 
     Combines the table catalog, latest metric run statuses, and open issues into
     a compact report:
-    - summary: workspace/scope totals (tables monitored/alerting/healthy/unmonitored)
+    - summary: workspace/scope totals (tables monitored/alerting/healthy/unknown/
+      unmonitored — "unknown" means monitored but every metric's latest run
+      status is indeterminate, e.g. never run)
     - schemas: per-schema rollup with table and issue counts
     - attention: per-table detail for datasets that are alerting or have open
       issues (capped by max_tables), including a brief issue list
@@ -1500,6 +1502,14 @@ async def get_dataset_health_summary(
         if tables_result.get("error"):
             return tables_result
         tables = tables_result.get("tables", [])
+
+        if schema_name and not tables:
+            # The API schema filter is case-sensitive; retry unfiltered and rely
+            # on the case-insensitive client-side re-filter below.
+            tables_result = await client.search_tables()
+            if tables_result.get("error"):
+                return tables_result
+            tables = tables_result.get("tables", [])
 
         if warehouse_name:
             wanted = warehouse_name.lower()
@@ -1564,8 +1574,10 @@ async def get_dataset_health_summary(
             compact=True,
             page_size=200,
         )
+        if issues_result.get("error"):
+            return issues_result
         issue_key = "issues" if "issues" in issues_result else "issue"
-        open_issues = issues_result.get(issue_key, []) if not issues_result.get("error") else []
+        open_issues = issues_result.get(issue_key, [])
 
         issues_by_table: Dict[tuple, List[Dict[str, Any]]] = {}
         for issue in open_issues:
@@ -1589,7 +1601,8 @@ async def get_dataset_health_summary(
         schema_rollup: Dict[tuple, Dict[str, Any]] = {}
         totals = {
             "tables_total": len(tables), "tables_monitored": 0,
-            "tables_alerting": 0, "tables_healthy": 0, "tables_unmonitored": 0,
+            "tables_alerting": 0, "tables_healthy": 0, "tables_unknown": 0,
+            "tables_unmonitored": 0,
             "metrics_total": 0, "metrics_alerting": 0, "open_issues_total": 0,
         }
 
@@ -1635,9 +1648,13 @@ async def get_dataset_health_summary(
                 if len(table_issues) > MAX_ISSUES_PER_TABLE:
                     entry["open_issues_truncated"] = len(table_issues) - MAX_ISSUES_PER_TABLE
                 attention.append(entry)
-            elif stats:
+            elif stats and stats["metrics_healthy"]:
                 totals["tables_healthy"] += 1
                 healthy_monitored.append(f"{warehouse}/{schema_full}/{table.get('name')}")
+            elif stats:
+                # Every metric's latest run is in an unknown state (e.g. never
+                # run) — monitored, but not verified healthy.
+                totals["tables_unknown"] += 1
             else:
                 totals["tables_unmonitored"] += 1
 
