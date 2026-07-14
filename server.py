@@ -13,7 +13,7 @@ import sys
 import json
 from typing import Optional, Dict, Any, List
 from pathlib import Path
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 
 # Import our modules
 from auth import BigeyeAuthClient
@@ -831,12 +831,13 @@ async def list_issues(
     statuses: Optional[List[str]] = None,
     schema_names: Optional[List[str]] = None,
     assignee_ids: Optional[List[int]] = None,
+    collection_ids: Optional[List[int]] = None,
     page_size: Optional[int] = None,
     page_cursor: Optional[str] = None,
     compact: bool = True,
     max_issues: Optional[int] = 15
 ) -> Dict[str, Any]:
-    """List data quality issues across the workspace. Supports filtering by status (ISSUE_STATUS_NEW, ISSUE_STATUS_ACKNOWLEDGED, ISSUE_STATUS_CLOSED, ISSUE_STATUS_MONITORING, ISSUE_STATUS_MERGED), schema, and assignee. Returns compact summaries by default. Best for broad views like 'show all open issues'. To find issues assigned to the current user, first call get_current_user to get their integer 'id', then pass it as assignee_ids=[id]. For issues on a specific table, use list_table_issues instead.
+    """List data quality issues across the workspace. Supports filtering by status (ISSUE_STATUS_NEW, ISSUE_STATUS_ACKNOWLEDGED, ISSUE_STATUS_CLOSED, ISSUE_STATUS_MONITORING, ISSUE_STATUS_MERGED), schema, assignee, and collection. Returns compact summaries by default. Best for broad views like 'show all open issues'. To find issues assigned to the current user, first call get_current_user to get their integer 'id', then pass it as assignee_ids=[id]. To filter by collection, call list_collections first to resolve a collection name to its ID. For issues on a specific table, use list_table_issues instead.
 
     Args:
         statuses: Optional list of issue statuses to filter by. Possible values:
@@ -849,6 +850,9 @@ async def list_issues(
         assignee_ids: Optional list of integer user IDs to filter issues by assignee.
             To filter by the current user ("assigned to me"), call get_current_user
             first and use the returned 'id'.
+        collection_ids: Optional list of collection IDs to filter issues by.
+            Collections group related metrics (data products, domains, etc.).
+            Call list_collections() to resolve a collection name to its ID first.
         page_size: Optional number of issues to request from API per page (default: 20)
         page_cursor: Cursor for pagination
         compact: If True (default), returns only minimal fields (id, name, status, table, schema).
@@ -873,11 +877,14 @@ async def list_issues(
         debug_print(f"Filtering by schema names: {schema_names}")
     if assignee_ids:
         debug_print(f"Filtering by assignee IDs: {assignee_ids}")
+    if collection_ids:
+        debug_print(f"Filtering by collection IDs: {collection_ids}")
 
     result = await client.fetch_issues(
         currentStatus=statuses,
         schemaNames=schema_names,
         assigneeIds=assignee_ids,
+        collection_ids=collection_ids,
         page_size=page_size if page_size else 20,
         page_cursor=page_cursor,
         include_full_history=False,
@@ -1409,6 +1416,270 @@ async def list_data_sources() -> Dict[str, Any]:
         return {
             "error": True,
             "message": f"Error fetching data sources: {str(e)}"
+        }
+
+
+@mcp.tool()
+async def list_collections() -> Dict[str, Any]:
+    """List all collections in the workspace. Collections are curated groups of metrics (data products, domains, etc.). Returns each collection's id, name, description, and metricIds. Use this to resolve a collection name to its ID, then pass it to list_issues(collection_ids=[...]) to see that collection's issues."""
+    client = get_api_client()
+
+    debug_print("Fetching collections")
+
+    try:
+        result = await client.fetch_collections()
+        return result
+    except Exception as e:
+        return {
+            "error": True,
+            "message": f"Error fetching collections: {str(e)}"
+        }
+
+
+def _table_schema_full(table: Dict[str, Any]) -> str:
+    """Combined database.schema name for a table object, matching the format
+    used by issue and metric metadata schemaName fields."""
+    database = table.get("databaseName")
+    schema = table.get("schemaName") or ""
+    return f"{database}.{schema}" if database else schema
+
+
+def _metric_health(info: Dict[str, Any]) -> str:
+    """Classify one /api/v1/metrics/info entry as alerting, healthy, or unknown."""
+    status = info.get("status") or ""
+    if "CRITICAL" in status or "ALERT" in status:
+        return "alerting"
+    current = (info.get("metricMetadata") or {}).get("currentMetricStatus") or ""
+    if current == "METRIC_STATUS_ALERTING":
+        return "alerting"
+    if status == "METRIC_RUN_STATUS_OK" or current == "METRIC_STATUS_HEALTHY":
+        return "healthy"
+    return "unknown"
+
+
+@mcp.tool()
+async def get_dataset_health_summary(
+    warehouse_name: Optional[str] = None,
+    schema_name: Optional[str] = None,
+    max_tables: int = 25,
+) -> Dict[str, Any]:
+    """Get a health overview of datasets (tables): monitoring status and open issues per dataset, rolled up per schema. This is the recommended single-call tool for questions like "show me the health of my datasets" or "which tables are alerting?".
+
+    Combines the table catalog, latest metric run statuses, and open issues into
+    a compact report:
+    - summary: workspace/scope totals (tables monitored/alerting/healthy/unknown/
+      unmonitored — "unknown" means monitored but every metric's latest run
+      status is indeterminate, e.g. never run)
+    - schemas: per-schema rollup with table and issue counts
+    - attention: per-table detail for datasets that are alerting or have open
+      issues (capped by max_tables), including a brief issue list
+    - healthy_monitored_tables: monitored datasets with no alerts or open issues
+
+    A dataset counts as "monitored" when at least one metric is configured on it.
+    "Alerting" means a metric's latest run breached thresholds or the dataset has
+    an open (new/acknowledged/monitoring) issue.
+
+    Args:
+        warehouse_name: Optional warehouse (data source) name to scope the report,
+            e.g. "MinnCo-Bronze-Snowflake". Case-insensitive exact match.
+        schema_name: Optional schema name to scope the report. Use the same format
+            shown elsewhere: "database.schema" when the warehouse has a database
+            layer (e.g. "MINNCO_BRONZE.dbo"), plain schema otherwise (e.g. "dbo").
+            Case-insensitive exact match.
+        max_tables: Maximum number of tables to detail in the attention list
+            (default: 25). Counts in summary/schemas are never truncated.
+    """
+    client = get_api_client()
+
+    debug_print(f"Dataset health summary: warehouse={warehouse_name}, schema={schema_name}")
+
+    try:
+        # 1. Table inventory. The /api/v1/tables schema filter accepts names, but
+        # there is no warehouse-name filter, so warehouse scoping is done client-side.
+        tables_result = await client.search_tables(
+            schema_names=[schema_name] if schema_name else None,
+        )
+        if tables_result.get("error"):
+            return tables_result
+        tables = tables_result.get("tables", [])
+
+        if schema_name and not tables:
+            # The API schema filter is case-sensitive; retry unfiltered and rely
+            # on the case-insensitive client-side re-filter below.
+            tables_result = await client.search_tables()
+            if tables_result.get("error"):
+                return tables_result
+            tables = tables_result.get("tables", [])
+
+        if warehouse_name:
+            wanted = warehouse_name.lower()
+            tables = [t for t in tables if (t.get("warehouseName") or "").lower() == wanted]
+        if schema_name:
+            # The API schema filter matches on the bare schema part, so a query
+            # like "dbo" also returns "MINNCO_BRONZE.dbo" tables. Re-filter on
+            # the full name for exactness (accept either form the caller used).
+            wanted = schema_name.lower()
+            tables = [
+                t for t in tables
+                if _table_schema_full(t).lower() == wanted
+                or (t.get("schemaName") or "").lower() == wanted
+            ]
+
+        if not tables:
+            return {
+                "scope": {"warehouse_name": warehouse_name, "schema_name": schema_name},
+                "summary": {"tables_total": 0},
+                "message": "No tables found in scope. Check the warehouse/schema names "
+                           "(schema names use database.schema format where applicable).",
+            }
+
+        tables_by_id = {t["id"]: t for t in tables}
+        scope_warehouse_ids = sorted({t["warehouseId"] for t in tables if t.get("warehouseId")})
+
+        # 2. Metric health. /api/v1/metrics/info has no schema filter, so fetch by
+        # warehouse and join to the in-scope tables via datasetId == table id.
+        metrics_result = await client.get_metric_info(
+            warehouse_ids=scope_warehouse_ids if (warehouse_name or schema_name) else None,
+        )
+        if metrics_result.get("error"):
+            return metrics_result
+        metric_infos = metrics_result.get("metrics", [])
+
+        per_table: Dict[int, Dict[str, Any]] = {}
+        for info in metric_infos:
+            metadata = info.get("metricMetadata") or {}
+            dataset_id = metadata.get("datasetId")
+            if dataset_id not in tables_by_id:
+                continue
+            stats = per_table.setdefault(dataset_id, {
+                "metrics_total": 0, "metrics_alerting": 0,
+                "metrics_healthy": 0, "metrics_unknown": 0,
+                "last_run_at": 0,
+            })
+            stats["metrics_total"] += 1
+            stats[f"metrics_{_metric_health(info)}"] += 1
+            run_at = metadata.get("runAt") or 0
+            if run_at > stats["last_run_at"]:
+                stats["last_run_at"] = run_at
+
+        # 3. Open issues, grouped per dataset. Issue schemaName already uses the
+        # combined database.schema format, matching _table_schema_full. Single page:
+        # workspaces with more than 200 open issues will undercount in the rollup.
+        issues_result = await client.fetch_issues(
+            currentStatus=[
+                "ISSUE_STATUS_NEW",
+                "ISSUE_STATUS_ACKNOWLEDGED",
+                "ISSUE_STATUS_MONITORING",
+            ],
+            compact=True,
+            page_size=200,
+        )
+        if issues_result.get("error"):
+            return issues_result
+        issue_key = "issues" if "issues" in issues_result else "issue"
+        open_issues = issues_result.get(issue_key, [])
+
+        issues_by_table: Dict[tuple, List[Dict[str, Any]]] = {}
+        for issue in open_issues:
+            key = (
+                (issue.get("warehouseName") or "").lower(),
+                (issue.get("schemaName") or "").lower(),
+                (issue.get("tableName") or "").lower(),
+            )
+            issues_by_table.setdefault(key, []).append({
+                "id": issue.get("id"),
+                "name": issue.get("name"),
+                "status": issue.get("currentStatus"),
+                "priority": issue.get("priority"),
+                "summary": issue.get("summary"),
+            })
+
+        # 4. Classify each table and roll up.
+        MAX_ISSUES_PER_TABLE = 5
+        attention = []
+        healthy_monitored = []
+        schema_rollup: Dict[tuple, Dict[str, Any]] = {}
+        totals = {
+            "tables_total": len(tables), "tables_monitored": 0,
+            "tables_alerting": 0, "tables_healthy": 0, "tables_unknown": 0,
+            "tables_unmonitored": 0,
+            "metrics_total": 0, "metrics_alerting": 0, "open_issues_total": 0,
+        }
+
+        for table in tables:
+            schema_full = _table_schema_full(table)
+            warehouse = table.get("warehouseName") or ""
+            issue_lookup_key = (warehouse.lower(), schema_full.lower(), (table.get("name") or "").lower())
+            table_issues = issues_by_table.get(issue_lookup_key, [])
+            stats = per_table.get(table["id"])
+
+            rollup = schema_rollup.setdefault((warehouse, schema_full), {
+                "warehouse": warehouse, "schema": schema_full,
+                "tables_total": 0, "tables_monitored": 0,
+                "tables_alerting": 0, "open_issues": 0,
+            })
+            rollup["tables_total"] += 1
+            rollup["open_issues"] += len(table_issues)
+            totals["open_issues_total"] += len(table_issues)
+
+            if stats:
+                totals["tables_monitored"] += 1
+                rollup["tables_monitored"] += 1
+                totals["metrics_total"] += stats["metrics_total"]
+                totals["metrics_alerting"] += stats["metrics_alerting"]
+
+            is_alerting = bool(table_issues) or bool(stats and stats["metrics_alerting"])
+            if is_alerting:
+                totals["tables_alerting"] += 1
+                rollup["tables_alerting"] += 1
+                entry = {
+                    "table_id": table["id"],
+                    "table": table.get("name"),
+                    "schema": schema_full,
+                    "warehouse": warehouse,
+                    "metrics": {k: v for k, v in (stats or {"metrics_total": 0}).items()
+                                if k != "last_run_at"},
+                    "open_issues": table_issues[:MAX_ISSUES_PER_TABLE],
+                }
+                if stats and stats.get("last_run_at"):
+                    entry["last_run_at"] = datetime.fromtimestamp(
+                        stats["last_run_at"], timezone.utc
+                    ).strftime("%Y-%m-%dT%H:%M:%SZ")
+                if len(table_issues) > MAX_ISSUES_PER_TABLE:
+                    entry["open_issues_truncated"] = len(table_issues) - MAX_ISSUES_PER_TABLE
+                attention.append(entry)
+            elif stats and stats["metrics_healthy"]:
+                totals["tables_healthy"] += 1
+                healthy_monitored.append(f"{warehouse}/{schema_full}/{table.get('name')}")
+            elif stats:
+                # Every metric's latest run is in an unknown state (e.g. never
+                # run) — monitored, but not verified healthy.
+                totals["tables_unknown"] += 1
+            else:
+                totals["tables_unmonitored"] += 1
+
+        # Worst tables first: most alerting metrics, then most open issues.
+        attention.sort(key=lambda e: (
+            -(e["metrics"].get("metrics_alerting") or 0), -len(e["open_issues"])))
+        attention_truncated = max(0, len(attention) - max_tables)
+
+        return {
+            "scope": {"warehouse_name": warehouse_name, "schema_name": schema_name},
+            "summary": totals,
+            "schemas": sorted(
+                schema_rollup.values(),
+                key=lambda r: (-r["tables_alerting"], -r["tables_monitored"]),
+            ),
+            "attention": attention[:max_tables],
+            "attention_truncated": attention_truncated,
+            "healthy_monitored_tables": healthy_monitored[:50],
+            "hint": "Investigate a specific dataset with list_table_issues / "
+                    "list_table_metrics, or a specific issue with get_issue.",
+        }
+    except Exception as e:
+        return {
+            "error": True,
+            "message": f"Error building dataset health summary: {str(e)}"
         }
 
 @mcp.tool()
