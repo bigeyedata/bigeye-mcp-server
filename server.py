@@ -1822,7 +1822,7 @@ def _rollup_users(conversations: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
             user_json["currency"] = rollup["currency"]
         user_json["agent_external_ids"] = sorted(rollup["agent_external_ids"])
         best = rollup["most_expensive_conversation"]
-        if best is not None and best.get("estimatedCost"):
+        if best is not None and best.get("estimatedCost") is not None:
             user_json["most_expensive_conversation"] = {
                 "id": best.get("id"),
                 "external_id": best.get("externalId"),
@@ -1898,13 +1898,31 @@ async def get_ai_agent_trust_hub(
     )
 
     sort_by = sort_by if sort_by in ("cost", "tokens") else "recent"
+    max_conversations = max(0, max_conversations)
 
     try:
+        # Resolve agent_id -> agent_external_id once, up front: both the
+        # object-access branch (to scope by agent) and the agent-drilldown
+        # branch need it, and an agent_id that matches nothing should be
+        # reported rather than silently falling through to another view.
+        resolved_agent_external_id = agent_external_id
+        agent_lookup_failed = False
+        if not resolved_agent_external_id and agent_id is not None:
+            agents_result = await client.list_ai_agents()
+            if agents_result.get("error"):
+                return agents_result
+            for agent in agents_result.get("aiAgents", []):
+                if agent.get("id") == agent_id:
+                    resolved_agent_external_id = agent.get("externalId")
+                    break
+            else:
+                agent_lookup_failed = True
+
         # 1. Object access: table_name / column_name / object_name.
         object_query = table_name or column_name or object_name
         if object_query:
             summary_result = await client.get_access_decision_summary(
-                agent_external_id=agent_external_id,
+                agent_external_id=resolved_agent_external_id,
             )
             if summary_result.get("error"):
                 return summary_result
@@ -1988,15 +2006,12 @@ async def get_ai_agent_trust_hub(
             }
 
         # 4. One agent's conversations and per-user breakdown.
-        resolved_agent_external_id = agent_external_id
-        if not resolved_agent_external_id and agent_id is not None:
-            agents_result = await client.list_ai_agents()
-            if agents_result.get("error"):
-                return agents_result
-            for agent in agents_result.get("aiAgents", []):
-                if agent.get("id") == agent_id:
-                    resolved_agent_external_id = agent.get("externalId")
-                    break
+        if agent_lookup_failed:
+            return {
+                "agent_id": agent_id,
+                "message": f"No AI agent found with id {agent_id} in this workspace. Call "
+                           "the tool with no arguments to list agents.",
+            }
 
         if resolved_agent_external_id:
             conversations_result = await client.list_agent_conversations(
