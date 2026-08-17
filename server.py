@@ -1682,6 +1682,419 @@ async def get_dataset_health_summary(
             "message": f"Error building dataset health summary: {str(e)}"
         }
 
+def _agent_summary_json(agent: Dict[str, Any]) -> Dict[str, Any]:
+    """Trim an AiAgent REST object to the fields the model needs."""
+    summary = {
+        "id": agent.get("id"),
+        "external_id": agent.get("externalId"),
+        "name": agent.get("name"),
+        "platform": agent.get("platform"),
+        "status": agent.get("status"),
+    }
+    if agent.get("description"):
+        summary["description"] = agent["description"]
+    trust_scores = agent.get("trustScores")
+    if trust_scores:
+        summary["trust_scores"] = trust_scores
+    sources = agent.get("sources")
+    if sources:
+        summary["data_sources"] = [
+            {"id": s.get("id"), "name": s.get("name"), "warehouse_vendor": s.get("warehouseVendor")}
+            for s in sources
+        ]
+    return summary
+
+
+def _conversation_summary_json(conversation: Dict[str, Any]) -> Dict[str, Any]:
+    """Trim an AgentConversation REST object to the fields the model needs."""
+    summary = {
+        "id": conversation.get("id"),
+        "external_id": conversation.get("externalId"),
+        "agent_external_id": conversation.get("agentExternalId"),
+        "timestamp": conversation.get("timestamp"),
+    }
+    username = conversation.get("username")
+    if username:
+        summary["username"] = username
+    user = conversation.get("user")
+    if user:
+        summary["user_id"] = user.get("id")
+        if user.get("displayName"):
+            summary["user_display_name"] = user["displayName"]
+    if conversation.get("tokenUsage") is not None:
+        summary["token_usage"] = conversation["tokenUsage"]
+    if conversation.get("estimatedCost") is not None:
+        summary["estimated_cost"] = conversation["estimatedCost"]
+    if conversation.get("currency"):
+        summary["currency"] = conversation["currency"]
+    if conversation.get("initialPrompt"):
+        summary["initial_prompt"] = conversation["initialPrompt"]
+
+    conv_summary = conversation.get("summary") or {}
+    if conv_summary:
+        summary["accessed_tables"] = [
+            {"id": t.get("id"), "name": t.get("name"), "schema_name": t.get("schemaName")}
+            for t in conv_summary.get("tables", [])
+        ]
+        if conv_summary.get("numIssues") is not None:
+            summary["num_issues"] = conv_summary["numIssues"]
+        if conv_summary.get("maxSensitivity"):
+            summary["max_sensitivity"] = conv_summary["maxSensitivity"]
+        if conv_summary.get("numFindings") is not None:
+            summary["num_findings"] = conv_summary["numFindings"]
+        if conv_summary.get("numMonitors") is not None:
+            summary["num_monitors"] = conv_summary["numMonitors"]
+        if conv_summary.get("hasScanCoverage") is not None:
+            summary["has_scan_coverage"] = conv_summary["hasScanCoverage"]
+        if conv_summary.get("numCertifiedTables") is not None:
+            summary["num_certified_tables"] = conv_summary["numCertifiedTables"]
+    return summary
+
+
+def _sort_conversations(conversations: List[Dict[str, Any]], sort_by: str) -> List[Dict[str, Any]]:
+    """Order conversations most-recent/most-expensive/heaviest-token-use first."""
+    if sort_by == "cost":
+        key = lambda c: c.get("estimatedCost") or 0
+    elif sort_by == "tokens":
+        key = lambda c: c.get("tokenUsage") or 0
+    else:
+        key = lambda c: c.get("timestamp") or 0
+    return sorted(conversations, key=key, reverse=True)
+
+
+def _conversation_user_key(conversation: Dict[str, Any]) -> str:
+    """Group a conversation by username, falling back to the linked account
+    or a single unattributed bucket, mirroring the chat tool's grouping."""
+    username = conversation.get("username")
+    if username:
+        return f"username:{username.lower()}"
+    user = conversation.get("user") or {}
+    if user.get("id") is not None:
+        return f"user:{user['id']}"
+    return "unattributed"
+
+
+def _rollup_users(conversations: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Roll conversations up by the human behind them: total cost/tokens,
+    agents used, and their single most expensive conversation. Sorted by
+    total cost so the biggest spenders come first."""
+    rollups: Dict[str, Dict[str, Any]] = {}
+    for conversation in conversations:
+        key = _conversation_user_key(conversation)
+        rollup = rollups.setdefault(key, {
+            "identity": conversation,
+            "conversation_count": 0,
+            "total_token_usage": 0,
+            "total_estimated_cost": 0.0,
+            "currency": None,
+            "agent_external_ids": set(),
+            "most_expensive_conversation": None,
+        })
+        rollup["conversation_count"] += 1
+        rollup["total_token_usage"] += conversation.get("tokenUsage") or 0
+        cost = conversation.get("estimatedCost") or 0
+        rollup["total_estimated_cost"] += cost
+        if rollup["currency"] is None and conversation.get("currency"):
+            rollup["currency"] = conversation["currency"]
+        agent_external_id = conversation.get("agentExternalId")
+        if agent_external_id:
+            rollup["agent_external_ids"].add(agent_external_id)
+        current_best = rollup["most_expensive_conversation"]
+        if current_best is None or cost > (current_best.get("estimatedCost") or 0):
+            rollup["most_expensive_conversation"] = conversation
+
+    users = []
+    for rollup in rollups.values():
+        identity = rollup["identity"]
+        user_json: Dict[str, Any] = {}
+        username = identity.get("username")
+        if username:
+            user_json["username"] = username
+        user = identity.get("user") or {}
+        if user.get("id") is not None:
+            user_json["user_id"] = user["id"]
+            if user.get("displayName"):
+                user_json["user_display_name"] = user["displayName"]
+        user_json["conversation_count"] = rollup["conversation_count"]
+        user_json["total_token_usage"] = rollup["total_token_usage"]
+        user_json["total_estimated_cost"] = rollup["total_estimated_cost"]
+        if rollup["currency"]:
+            user_json["currency"] = rollup["currency"]
+        user_json["agent_external_ids"] = sorted(rollup["agent_external_ids"])
+        best = rollup["most_expensive_conversation"]
+        if best is not None and best.get("estimatedCost") is not None:
+            user_json["most_expensive_conversation"] = {
+                "id": best.get("id"),
+                "external_id": best.get("externalId"),
+                "estimated_cost": best.get("estimatedCost"),
+                "timestamp": best.get("timestamp"),
+            }
+        users.append(user_json)
+
+    users.sort(key=lambda u: u["total_estimated_cost"], reverse=True)
+    return users
+
+
+@mcp.tool()
+async def get_ai_agent_trust_hub(
+    agent_id: Optional[int] = None,
+    agent_external_id: Optional[str] = None,
+    username: Optional[str] = None,
+    conversation_id: Optional[int] = None,
+    table_name: Optional[str] = None,
+    column_name: Optional[str] = None,
+    object_name: Optional[str] = None,
+    sort_by: str = "recent",
+    max_conversations: int = 25,
+) -> Dict[str, Any]:
+    """Get information about AI agents in the workspace, the users who talked to them, their conversations, and the tables/columns those conversations accessed. Use this for questions like "which AI agents are running up cost", "who is talking to this agent", "what did this conversation touch", or "which agents have accessed this table".
+
+    With no arguments, returns the workspace overview: every registered agent
+    (identity, platform, trust scores, data sources, conversation count,
+    total token usage/cost, distinct accessed tables), every user who has
+    talked to an agent (conversation count, total cost/tokens, agents used,
+    their single most expensive conversation), and the most expensive
+    conversations in the workspace.
+
+    Narrow it by supplying one identifier, checked in this order:
+    - table_name, column_name, or object_name: aggregate access info for
+      matching tables/columns (access count, distinct agent count, monitor
+      and finding counts, max sensitivity, certification status), matched
+      case-insensitively as a substring. NOTE: this view is aggregate only —
+      it cannot say which specific users accessed the object, only how many
+      distinct agents did and how often.
+    - conversation_id: one conversation's cost, tokens, and the tables it
+      accessed with their sensitivity/monitoring/issue status.
+    - username: that user's conversations across every agent, with cost and
+      token totals.
+    - agent_id or agent_external_id: that agent's conversations and the
+      per-user breakdown of who has talked to it.
+
+    Conversation lists are capped by max_conversations; every response
+    reports the true count and whether the list was truncated. Use sort_by
+    to choose which conversations are kept when a list is capped.
+
+    Args:
+        agent_id: The numeric Bigeye id of an agent.
+        agent_external_id: The external id of an agent, as reported by its
+            platform. Equivalent to agent_id; use whichever you have.
+        username: A username recorded on conversations (usually an email).
+        conversation_id: The numeric Bigeye id of a conversation.
+        table_name: Part of a table name to look up aggregate access info by.
+        column_name: Part of a column name to look up aggregate access info by.
+        object_name: Part of a table or column name to look up aggregate
+            access info by (matches either).
+        sort_by: Which conversations to keep when a list is capped: "recent"
+            (default), "cost", or "tokens".
+        max_conversations: Maximum number of conversations to return in any
+            single list (default: 25).
+    """
+    client = get_api_client()
+
+    debug_print(
+        f"AI agent trust hub: agent_id={agent_id}, agent_external_id={agent_external_id}, "
+        f"username={username}, conversation_id={conversation_id}, table_name={table_name}, "
+        f"column_name={column_name}, object_name={object_name}"
+    )
+
+    sort_by = sort_by if sort_by in ("cost", "tokens") else "recent"
+    max_conversations = max(0, max_conversations)
+
+    try:
+        # Resolve agent_id -> agent_external_id once, up front: both the
+        # object-access branch (to scope by agent) and the agent-drilldown
+        # branch need it, and an agent_id that matches nothing should be
+        # reported rather than silently falling through to another view.
+        resolved_agent_external_id = agent_external_id
+        agent_lookup_failed = False
+        if not resolved_agent_external_id and agent_id is not None:
+            agents_result = await client.list_ai_agents()
+            if agents_result.get("error"):
+                return agents_result
+            for agent in agents_result.get("aiAgents", []):
+                if agent.get("id") == agent_id:
+                    resolved_agent_external_id = agent.get("externalId")
+                    break
+            else:
+                agent_lookup_failed = True
+
+        # 1. Object access: table_name / column_name / object_name.
+        object_query = table_name or column_name or object_name
+        if object_query:
+            summary_result = await client.get_access_decision_summary(
+                agent_external_id=resolved_agent_external_id,
+            )
+            if summary_result.get("error"):
+                return summary_result
+            summaries = summary_result.get("summaries", [])
+
+            wanted = object_query.lower()
+            matched = [
+                s for s in summaries
+                if wanted in (s.get("tableName") or "").lower()
+                or wanted in (s.get("columnName") or "").lower()
+            ]
+
+            if not matched:
+                return {
+                    "object_query": object_query,
+                    "matched_object_count": 0,
+                    "message": "No AI agent accesses recorded for that object. Object names "
+                               "are matched against the table/column name recorded with the "
+                               "access, so try a shorter fragment, or call the tool with no "
+                               "arguments to see which agents and tables have activity.",
+                }
+
+            objects = [
+                {
+                    "warehouse_name": s.get("warehouseName"),
+                    "schema_name": s.get("schemaName"),
+                    "table_name": s.get("tableName"),
+                    "column_name": s.get("columnName"),
+                    "access_decision_count": s.get("accessDecisionCount"),
+                    "distinct_agent_count": s.get("distinctAgentCount"),
+                    "num_monitors": s.get("numMonitors"),
+                    "num_findings": s.get("numFindings"),
+                    "max_sensitivity": s.get("maxSensitivity"),
+                    "certification_status": s.get("certificationStatus"),
+                }
+                for s in matched
+            ]
+            return {
+                "object_query": object_query,
+                "matched_object_count": len(objects),
+                "objects": objects,
+                "note": "Aggregate counts only; this view cannot attribute accesses to "
+                        "specific users.",
+            }
+
+        # 2. One conversation.
+        if conversation_id is not None:
+            conversation = await client.get_agent_conversation(conversation_id)
+            if conversation.get("error"):
+                return conversation
+            return {"conversation": _conversation_summary_json(conversation)}
+
+        # 3. One user across every agent.
+        if username:
+            conversations_result = await client.list_agent_conversations()
+            if conversations_result.get("error"):
+                return conversations_result
+            conversations = conversations_result.get("agentConversations", [])
+            wanted = username.lower()
+            user_conversations = [
+                c for c in conversations if (c.get("username") or "").lower() == wanted
+            ]
+            if not user_conversations:
+                return {
+                    "username": username,
+                    "conversation_count": 0,
+                    "message": "No agent conversations recorded for this user. Usernames come "
+                               "from the agent platform and are usually email addresses; call "
+                               "the tool with no arguments to list users who do have "
+                               "conversations.",
+                }
+            users = _rollup_users(user_conversations)
+            sorted_conversations = _sort_conversations(user_conversations, sort_by)
+            truncated = sorted_conversations[:max_conversations]
+            return {
+                "user": users[0],
+                "conversation_count": len(user_conversations),
+                "conversations": [_conversation_summary_json(c) for c in truncated],
+                "conversations_truncated": len(user_conversations) > max_conversations,
+                "sorted_by": sort_by,
+            }
+
+        # 4. One agent's conversations and per-user breakdown.
+        if agent_lookup_failed:
+            return {
+                "agent_id": agent_id,
+                "message": f"No AI agent found with id {agent_id} in this workspace. Call "
+                           "the tool with no arguments to list agents.",
+            }
+
+        if resolved_agent_external_id:
+            conversations_result = await client.list_agent_conversations(
+                agent_external_id=resolved_agent_external_id,
+            )
+            if conversations_result.get("error"):
+                return conversations_result
+            conversations = conversations_result.get("agentConversations", [])
+
+            agent_json = None
+            agent_lookup = await client.list_ai_agents()
+            if not agent_lookup.get("error"):
+                for agent in agent_lookup.get("aiAgents", []):
+                    if agent.get("externalId") == resolved_agent_external_id:
+                        agent_json = _agent_summary_json(agent)
+                        break
+            if agent_json is None:
+                agent_json = {"external_id": resolved_agent_external_id}
+
+            sorted_conversations = _sort_conversations(conversations, sort_by)
+            truncated = sorted_conversations[:max_conversations]
+            return {
+                "agent": agent_json,
+                "users": _rollup_users(conversations),
+                "conversation_count": len(conversations),
+                "conversations": [_conversation_summary_json(c) for c in truncated],
+                "conversations_truncated": len(conversations) > max_conversations,
+                "sorted_by": sort_by,
+            }
+
+        # 5. Workspace overview: every agent, every user, and the most
+        # expensive conversations.
+        agents_result = await client.list_ai_agents()
+        if agents_result.get("error"):
+            return agents_result
+        agents = agents_result.get("aiAgents", [])
+
+        conversations_result = await client.list_agent_conversations()
+        if conversations_result.get("error"):
+            return conversations_result
+        conversations = conversations_result.get("agentConversations", [])
+
+        conversations_by_agent: Dict[str, List[Dict[str, Any]]] = {}
+        for conversation in conversations:
+            conversations_by_agent.setdefault(
+                conversation.get("agentExternalId") or "", []
+            ).append(conversation)
+
+        agents_json = []
+        for agent in agents:
+            agent_json = _agent_summary_json(agent)
+            agent_conversations = conversations_by_agent.get(agent.get("externalId") or "", [])
+            total_tokens = sum(c.get("tokenUsage") or 0 for c in agent_conversations)
+            total_cost = sum(c.get("estimatedCost") or 0 for c in agent_conversations)
+            agent_json["conversation_count"] = len(agent_conversations)
+            agent_json["total_token_usage"] = total_tokens
+            agent_json["total_estimated_cost"] = total_cost
+            distinct_tables = {
+                (t.get("id"), t.get("name"))
+                for c in agent_conversations
+                for t in (c.get("summary") or {}).get("tables", [])
+            }
+            agent_json["distinct_accessed_table_count"] = len(distinct_tables)
+            agents_json.append(agent_json)
+
+        top_conversations = _sort_conversations(conversations, "cost")[:10]
+        users_json = _rollup_users(conversations)
+
+        return {
+            "agent_count": len(agents),
+            "agents": agents_json,
+            "user_count": len(users_json),
+            "users": users_json,
+            "conversation_count": len(conversations),
+            "top_conversations_by_cost": [_conversation_summary_json(c) for c in top_conversations],
+            "sorted_by": sort_by,
+        }
+    except Exception as e:
+        return {
+            "error": True,
+            "message": f"Error building AI agent trust hub: {str(e)}"
+        }
+
 @mcp.tool()
 async def get_lineage_graph(
     node_id: int,

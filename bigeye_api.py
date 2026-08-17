@@ -1455,6 +1455,128 @@ class BigeyeAPIClient:
             method="GET"
         )
 
+    async def list_ai_agents(
+        self,
+        workspace_id: Optional[int] = None
+    ) -> Dict[str, Any]:
+        """List AI agents registered in the workspace.
+
+        Returns each agent's identity, platform, status, trust scores
+        (quality/sensitivity/governance), and connected catalog sources.
+
+        Args:
+            workspace_id: The workspace ID
+
+        Returns:
+            Dictionary containing the list of AI agents (key "aiAgents")
+        """
+        workspace_id = self._resolve_workspace_id(workspace_id)
+        return await self.make_request(
+            "/api/v1/ai-agents/list",
+            method="POST",
+            json_data={"workspaceId": workspace_id}
+        )
+
+    async def get_ai_agent(
+        self,
+        agent_id: int
+    ) -> Dict[str, Any]:
+        """Get a single AI agent by its numeric Bigeye id.
+
+        Args:
+            agent_id: The Bigeye id of the AI agent
+
+        Returns:
+            Dictionary containing the AI agent's identity, platform, status,
+            trust scores, and connected catalog sources
+        """
+        return await self.make_request(
+            f"/api/v1/ai-agents/{agent_id}",
+            method="GET"
+        )
+
+    async def list_agent_conversations(
+        self,
+        agent_external_id: Optional[str] = None,
+        workspace_id: Optional[int] = None
+    ) -> Dict[str, Any]:
+        """List AI agent conversations in the workspace.
+
+        Each conversation carries its cost, token usage, the user who ran it
+        (if known), and a summary of the tables it accessed along with their
+        sensitivity, monitoring, and issue status.
+
+        Args:
+            agent_external_id: Optional external id of an agent, as reported
+                by its platform. Narrows the results to that agent's
+                conversations; omit for every conversation in the workspace.
+            workspace_id: The workspace ID
+
+        Returns:
+            Dictionary containing the list of conversations (key
+            "agentConversations")
+        """
+        workspace_id = self._resolve_workspace_id(workspace_id)
+        payload: Dict[str, Any] = {"workspaceId": workspace_id}
+        if agent_external_id:
+            payload["agentExternalId"] = agent_external_id
+        return await self.make_request(
+            "/api/v1/agent-conversations/list",
+            method="POST",
+            json_data=payload
+        )
+
+    async def get_agent_conversation(
+        self,
+        conversation_id: int
+    ) -> Dict[str, Any]:
+        """Get a single AI agent conversation by its numeric Bigeye id.
+
+        Args:
+            conversation_id: The Bigeye id of the conversation
+
+        Returns:
+            Dictionary containing the conversation's cost, token usage, user,
+            and accessed-data summary
+        """
+        return await self.make_request(
+            f"/api/v1/agent-conversations/{conversation_id}",
+            method="GET"
+        )
+
+    async def get_access_decision_summary(
+        self,
+        agent_external_id: Optional[str] = None,
+        workspace_id: Optional[int] = None
+    ) -> Dict[str, Any]:
+        """Get the aggregate table/column access summary for AI agents in the workspace.
+
+        Returns one row per table or column that an AI agent has accessed,
+        with the access count, number of distinct agents that touched it,
+        monitor and finding counts, max sensitivity, and certification
+        status. This is aggregate only — it cannot say which users made the
+        accesses.
+
+        Args:
+            agent_external_id: Optional external id of an agent, as reported
+                by its platform. Narrows the summary to that agent's
+                accesses; omit for every agent in the workspace.
+            workspace_id: The workspace ID
+
+        Returns:
+            Dictionary containing the list of access summaries (key
+            "summaries")
+        """
+        workspace_id = self._resolve_workspace_id(workspace_id)
+        payload: Dict[str, Any] = {"workspaceId": workspace_id}
+        if agent_external_id:
+            payload["agentExternalId"] = agent_external_id
+        return await self.make_request(
+            "/api/v1/access-decision/summary",
+            method="POST",
+            json_data=payload
+        )
+
     async def delete_lineage_node(
         self,
         node_id: int,
