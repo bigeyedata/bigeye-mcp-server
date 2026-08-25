@@ -4495,7 +4495,7 @@ async def list_glossary_terms(
     normalized_statuses = None
     if statuses:
         normalized_statuses = [
-            s if s.upper().startswith("GLOSSARY_TERM_STATUS_") else f"GLOSSARY_TERM_STATUS_{s.upper()}"
+            s.upper() if s.upper().startswith("GLOSSARY_TERM_STATUS_") else f"GLOSSARY_TERM_STATUS_{s.upper()}"
             for s in statuses
         ]
 
@@ -4554,7 +4554,7 @@ async def create_glossary_term(
     """
     normalized_status = None
     if status:
-        normalized_status = status if status.upper().startswith("GLOSSARY_TERM_STATUS_") else f"GLOSSARY_TERM_STATUS_{status.upper()}"
+        normalized_status = status.upper() if status.upper().startswith("GLOSSARY_TERM_STATUS_") else f"GLOSSARY_TERM_STATUS_{status.upper()}"
 
     client = get_api_client()
 
@@ -4623,7 +4623,7 @@ async def update_glossary_term(
 
     normalized_status = None
     if status:
-        normalized_status = status if status.upper().startswith("GLOSSARY_TERM_STATUS_") else f"GLOSSARY_TERM_STATUS_{status.upper()}"
+        normalized_status = status.upper() if status.upper().startswith("GLOSSARY_TERM_STATUS_") else f"GLOSSARY_TERM_STATUS_{status.upper()}"
 
     client = get_api_client()
 
@@ -4724,9 +4724,10 @@ async def link_glossary_term_to_entity(
                 "error": f"API error (status {result.get('status_code', 'unknown')}): {result.get('message', 'Unknown error')}",
             }
 
-        link_result = (result.get("results") or [{}])[0]
-        if link_result.get("success") is False:
-            return {"error": f"Link failed: {link_result.get('reason', 'Unknown reason')}"}
+        results = result.get("results") or []
+        if not results or results[0].get("success") is not True:
+            reason = results[0].get("reason", "Unknown reason") if results else "No result returned by API"
+            return {"error": f"Link failed: {reason}"}
 
         return {
             "success": True,
@@ -4768,9 +4769,10 @@ async def unlink_glossary_term_from_entity(
                 "error": f"API error (status {result.get('status_code', 'unknown')}): {result.get('message', 'Unknown error')}",
             }
 
-        link_result = (result.get("results") or [{}])[0]
-        if link_result.get("success") is False:
-            return {"error": f"Unlink failed: {link_result.get('reason', 'Unknown reason')}"}
+        results = result.get("results") or []
+        if not results or results[0].get("success") is not True:
+            reason = results[0].get("reason", "Unknown reason") if results else "No result returned by API"
+            return {"error": f"Unlink failed: {reason}"}
 
         return {
             "success": True,
