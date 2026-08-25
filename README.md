@@ -244,6 +244,17 @@ To connect to multiple Bigeye instances (e.g. demo and production), create separ
 - **`untag_entity`** — Remove a tag from an entity
 - **`list_entity_tags`** — List all tags on a specific entity
 
+### Business Glossary
+
+- **`list_glossary_terms`** — List or search business glossary terms
+- **`create_glossary_term`** — Create a new glossary term
+- **`update_glossary_term`** — Update a glossary term (add_synonyms appends without clobbering existing synonyms)
+- **`delete_glossary_term`** — Delete a glossary term and its entity links
+- **`link_glossary_term_to_entity`** — Link a term to a source, schema, table, or column
+- **`unlink_glossary_term_from_entity`** — Remove a term's link to an entity
+- **`get_glossary_term_links`** — List the entities linked to a term
+- **`get_entity_glossary_terms`** — List the terms linked to an entity
+
 ### System
 
 - **`get_health_status`** — Check the health and connectivity of the Bigeye API

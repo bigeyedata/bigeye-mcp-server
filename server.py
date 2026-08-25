@@ -4426,6 +4426,454 @@ async def list_entity_tags(
         return {"error": True, "message": f"Error listing entity tags: {str(e)}"}
 
 
+# ---------------------------------------------------------------------------
+# Business Glossary Tools
+# ---------------------------------------------------------------------------
+
+_GLOSSARY_ENTITY_TYPE_MAP = {
+    "SOURCE": "DATA_NODE_TYPE_SOURCE",
+    "SCHEMA": "DATA_NODE_TYPE_SCHEMA",
+    "TABLE": "DATA_NODE_TYPE_TABLE",
+    "COLUMN": "DATA_NODE_TYPE_COLUMN",
+    # Accept full enum values directly
+    "DATA_NODE_TYPE_SOURCE": "DATA_NODE_TYPE_SOURCE",
+    "DATA_NODE_TYPE_SCHEMA": "DATA_NODE_TYPE_SCHEMA",
+    "DATA_NODE_TYPE_TABLE": "DATA_NODE_TYPE_TABLE",
+    "DATA_NODE_TYPE_COLUMN": "DATA_NODE_TYPE_COLUMN",
+}
+
+
+def _validate_glossary_entity_type(entity_type: str) -> tuple:
+    """Validate and normalize entity_type for glossary links. Returns (normalized_value, error_dict_or_None)."""
+    upper = entity_type.upper()
+    if upper not in _GLOSSARY_ENTITY_TYPE_MAP:
+        return None, {
+            "error": f"Invalid entity_type: {entity_type}",
+            "valid_values": ["SOURCE", "SCHEMA", "TABLE", "COLUMN"],
+            "hint": "Use short names (e.g. TABLE) or full enum values (e.g. DATA_NODE_TYPE_TABLE). Glossary terms can only link to catalog assets, not metrics/deltas/SLAs/rules.",
+        }
+    return _GLOSSARY_ENTITY_TYPE_MAP[upper], None
+
+
+def _format_glossary_user(user: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+    if not user:
+        return None
+    return {"id": user.get("id"), "name": user.get("name"), "email": user.get("email")}
+
+
+def _format_glossary_term(term: Dict[str, Any]) -> Dict[str, Any]:
+    return {
+        "id": term.get("id"),
+        "name": term.get("name"),
+        "description": term.get("description"),
+        "synonyms": term.get("synonyms", []),
+        "examples": term.get("examples"),
+        "status": term.get("status"),
+        "owner": _format_glossary_user(term.get("owner")),
+        "steward": _format_glossary_user(term.get("steward")),
+    }
+
+
+@mcp.tool()
+async def list_glossary_terms(
+    search: Optional[str] = None,
+    statuses: Optional[List[str]] = None,
+    owner_ids: Optional[List[int]] = None,
+    page_size: int = 50,
+    page_cursor: Optional[str] = None,
+) -> Dict[str, Any]:
+    """List or search business glossary terms. Use search to match by name or synonym.
+
+    Args:
+        search: Optional search string matched against term name and synonyms
+        statuses: Optional list of statuses to filter by — DRAFT, REVIEW, APPROVED, or DEPRECATED
+            (short names or full enum values like GLOSSARY_TERM_STATUS_DRAFT)
+        owner_ids: Optional list of owner user IDs to filter by
+        page_size: Number of terms per page (default 50)
+        page_cursor: Pagination cursor from a previous response
+    """
+    normalized_statuses = None
+    if statuses:
+        normalized_statuses = [
+            s if s.upper().startswith("GLOSSARY_TERM_STATUS_") else f"GLOSSARY_TERM_STATUS_{s.upper()}"
+            for s in statuses
+        ]
+
+    client = get_api_client()
+
+    try:
+        result = await client.list_glossary_terms(
+            search=search,
+            statuses=normalized_statuses,
+            owner_ids=owner_ids,
+            page_size=page_size,
+            page_cursor=page_cursor,
+        )
+        if isinstance(result, dict) and result.get("error"):
+            return {
+                "error": f"API error (status {result.get('status_code', 'unknown')}): {result.get('message', 'Unknown error')}",
+            }
+
+        terms = [_format_glossary_term(t) for t in result.get("terms", [])]
+        response: Dict[str, Any] = {
+            "total_returned": len(terms),
+            "terms": terms,
+        }
+        pagination = result.get("paginationInfo")
+        if pagination and pagination.get("nextCursor"):
+            response["next_page_cursor"] = pagination["nextCursor"]
+        return response
+
+    except Exception as e:
+        return {"error": True, "message": f"Error listing glossary terms: {str(e)}"}
+
+
+@mcp.tool()
+async def create_glossary_term(
+    name: str,
+    description: Optional[str] = None,
+    synonyms: Optional[List[str]] = None,
+    examples: Optional[str] = None,
+    status: Optional[str] = None,
+    owner_id: Optional[int] = None,
+    steward_id: Optional[int] = None,
+) -> Dict[str, Any]:
+    """Create a new business glossary term.
+
+    Term names must be unique per workspace (case-insensitive). Use list_glossary_terms(search=...)
+    first to check whether a term with this name already exists.
+
+    Args:
+        name: Term name, e.g. "Net revenue"
+        description: Optional markdown description of the term
+        synonyms: Optional list of synonym strings, e.g. ["NR"]
+        examples: Optional free-text usage examples
+        status: Optional status — DRAFT, REVIEW, APPROVED, or DEPRECATED (defaults to DRAFT)
+        owner_id: Optional owner user ID (defaults to the creating user if omitted)
+        steward_id: Optional steward user ID
+    """
+    normalized_status = None
+    if status:
+        normalized_status = status if status.upper().startswith("GLOSSARY_TERM_STATUS_") else f"GLOSSARY_TERM_STATUS_{status.upper()}"
+
+    client = get_api_client()
+
+    try:
+        result = await client.create_glossary_term(
+            name=name,
+            description=description,
+            synonyms=synonyms,
+            examples=examples,
+            status=normalized_status,
+            owner_id=owner_id,
+            steward_id=steward_id,
+        )
+        if isinstance(result, dict) and result.get("error"):
+            return {
+                "error": f"API error (status {result.get('status_code', 'unknown')}): {result.get('message', 'Unknown error')}",
+            }
+
+        return {
+            "success": True,
+            "term": _format_glossary_term(result),
+        }
+
+    except Exception as e:
+        return {"error": True, "message": f"Error creating glossary term: {str(e)}"}
+
+
+@mcp.tool()
+async def update_glossary_term(
+    term_id: int,
+    name: Optional[str] = None,
+    description: Optional[str] = None,
+    synonyms: Optional[List[str]] = None,
+    add_synonyms: Optional[List[str]] = None,
+    examples: Optional[str] = None,
+    status: Optional[str] = None,
+    owner_id: Optional[int] = None,
+    steward_id: Optional[int] = None,
+) -> Dict[str, Any]:
+    """Update a business glossary term.
+
+    Use list_glossary_terms(search=<name>) first to resolve a term name to its term_id.
+
+    IMPORTANT: name, description, examples, status, owner, and steward are only changed
+    when you pass them — omitted fields are left alone. synonyms is the one exception:
+    it's a repeated field with no such presence-tracking on the server, so an update call
+    that omits it entirely is indistinguishable from "clear all synonyms" and WIPES the
+    existing list, even if you're only changing an unrelated field like status. To protect
+    against this, this tool always fetches the current term first and carries its existing
+    synonyms forward unless you explicitly pass synonyms (full replace) or add_synonyms
+    (merge in without removing current ones).
+
+    Args:
+        term_id: ID of the term to update
+        name: New name (optional)
+        description: New markdown description (optional)
+        synonyms: New full list of synonyms, replacing the existing list (optional)
+        add_synonyms: Synonyms to add to the existing list without removing current ones (optional)
+        examples: New examples text (optional)
+        status: New status — DRAFT, REVIEW, APPROVED, or DEPRECATED (optional)
+        owner_id: New owner user ID; pass 0 to clear (optional)
+        steward_id: New steward user ID; pass 0 to clear (optional)
+    """
+    if synonyms is not None and add_synonyms:
+        return {"error": "Provide either synonyms or add_synonyms, not both."}
+
+    normalized_status = None
+    if status:
+        normalized_status = status if status.upper().startswith("GLOSSARY_TERM_STATUS_") else f"GLOSSARY_TERM_STATUS_{status.upper()}"
+
+    client = get_api_client()
+
+    try:
+        if synonyms is None:
+            # synonyms has no server-side presence check (unlike the other fields), so it
+            # must always be re-sent in full or the update silently clears it.
+            current = await client.get_glossary_term(term_id)
+            if isinstance(current, dict) and current.get("error"):
+                return {
+                    "error": f"API error (status {current.get('status_code', 'unknown')}): {current.get('message', 'Unknown error')}",
+                }
+            existing = current.get("synonyms", [])
+            merged = list(existing)
+            if add_synonyms:
+                for s in add_synonyms:
+                    if s not in merged:
+                        merged.append(s)
+            synonyms = merged
+
+        result = await client.update_glossary_term(
+            term_id=term_id,
+            name=name,
+            description=description,
+            synonyms=synonyms,
+            examples=examples,
+            status=normalized_status,
+            owner_id=owner_id,
+            steward_id=steward_id,
+        )
+        if isinstance(result, dict) and result.get("error"):
+            return {
+                "error": f"API error (status {result.get('status_code', 'unknown')}): {result.get('message', 'Unknown error')}",
+            }
+
+        return {
+            "success": True,
+            "term": _format_glossary_term(result),
+        }
+
+    except Exception as e:
+        return {"error": True, "message": f"Error updating glossary term: {str(e)}"}
+
+
+@mcp.tool()
+async def delete_glossary_term(
+    term_id: int,
+) -> Dict[str, Any]:
+    """Delete a business glossary term. This also removes all of its entity links.
+
+    Args:
+        term_id: ID of the term to delete
+    """
+    client = get_api_client()
+
+    try:
+        result = await client.delete_glossary_term(term_id=term_id)
+        if isinstance(result, dict) and result.get("error"):
+            return {
+                "error": f"API error (status {result.get('status_code', 'unknown')}): {result.get('message', 'Unknown error')}",
+            }
+
+        return {"success": True, "deleted_term_id": term_id}
+
+    except Exception as e:
+        return {"error": True, "message": f"Error deleting glossary term: {str(e)}"}
+
+
+@mcp.tool()
+async def link_glossary_term_to_entity(
+    term_id: int,
+    entity_id: int,
+    entity_type: str,
+) -> Dict[str, Any]:
+    """Link a glossary term to a catalog entity (source, schema, table, or column).
+
+    Use list_glossary_terms(search=<name>) to resolve a term name to its term_id, and
+    search_tables/search_columns/search_schemas to resolve the entity to its ID.
+
+    Args:
+        term_id: ID of the glossary term
+        entity_id: ID of the catalog entity to link
+        entity_type: Entity type — SOURCE, SCHEMA, TABLE, or COLUMN
+    """
+    normalized_type, err = _validate_glossary_entity_type(entity_type)
+    if err:
+        return err
+
+    client = get_api_client()
+
+    try:
+        result = await client.link_glossary_term_entities(
+            term_id=term_id,
+            entity_refs=[{"entityType": normalized_type, "entityId": entity_id}],
+        )
+        if isinstance(result, dict) and result.get("error"):
+            return {
+                "error": f"API error (status {result.get('status_code', 'unknown')}): {result.get('message', 'Unknown error')}",
+            }
+
+        link_result = (result.get("results") or [{}])[0]
+        if link_result.get("success") is False:
+            return {"error": f"Link failed: {link_result.get('reason', 'Unknown reason')}"}
+
+        return {
+            "success": True,
+            "term_id": term_id,
+            "entity_id": entity_id,
+            "entity_type": normalized_type,
+        }
+
+    except Exception as e:
+        return {"error": True, "message": f"Error linking glossary term to entity: {str(e)}"}
+
+
+@mcp.tool()
+async def unlink_glossary_term_from_entity(
+    term_id: int,
+    entity_id: int,
+    entity_type: str,
+) -> Dict[str, Any]:
+    """Remove the link between a glossary term and a catalog entity.
+
+    Args:
+        term_id: ID of the glossary term
+        entity_id: ID of the catalog entity to unlink
+        entity_type: Entity type — SOURCE, SCHEMA, TABLE, or COLUMN
+    """
+    normalized_type, err = _validate_glossary_entity_type(entity_type)
+    if err:
+        return err
+
+    client = get_api_client()
+
+    try:
+        result = await client.unlink_glossary_term_entities(
+            term_id=term_id,
+            entity_refs=[{"entityType": normalized_type, "entityId": entity_id}],
+        )
+        if isinstance(result, dict) and result.get("error"):
+            return {
+                "error": f"API error (status {result.get('status_code', 'unknown')}): {result.get('message', 'Unknown error')}",
+            }
+
+        link_result = (result.get("results") or [{}])[0]
+        if link_result.get("success") is False:
+            return {"error": f"Unlink failed: {link_result.get('reason', 'Unknown reason')}"}
+
+        return {
+            "success": True,
+            "term_id": term_id,
+            "entity_id": entity_id,
+            "entity_type": normalized_type,
+        }
+
+    except Exception as e:
+        return {"error": True, "message": f"Error unlinking glossary term from entity: {str(e)}"}
+
+
+@mcp.tool()
+async def get_glossary_term_links(
+    term_id: int,
+    search: Optional[str] = None,
+    page_cursor: Optional[str] = None,
+) -> Dict[str, Any]:
+    """List the catalog entities linked to a glossary term.
+
+    Use list_glossary_terms(search=<name>) first to resolve a term name to its term_id.
+
+    Args:
+        term_id: ID of the glossary term
+        search: Optional search string to filter linked entities by name
+        page_cursor: Pagination cursor from a previous response
+    """
+    client = get_api_client()
+
+    try:
+        result = await client.get_glossary_term_links(
+            term_id=term_id,
+            search=search,
+            page_cursor=page_cursor,
+        )
+        if isinstance(result, dict) and result.get("error"):
+            return {
+                "error": f"API error (status {result.get('status_code', 'unknown')}): {result.get('message', 'Unknown error')}",
+            }
+
+        links = [
+            {
+                "entity_type": (link.get("ref") or {}).get("entityType"),
+                "entity_id": (link.get("ref") or {}).get("entityId"),
+                "entity_name": link.get("entityName"),
+                "catalog_path": link.get("catalogPath"),
+            }
+            for link in result.get("links", [])
+        ]
+        response: Dict[str, Any] = {
+            "term_id": term_id,
+            "total_returned": len(links),
+            "linked_entities": links,
+        }
+        pagination = result.get("paginationInfo")
+        if pagination and pagination.get("nextCursor"):
+            response["next_page_cursor"] = pagination["nextCursor"]
+        return response
+
+    except Exception as e:
+        return {"error": True, "message": f"Error getting glossary term links: {str(e)}"}
+
+
+@mcp.tool()
+async def get_entity_glossary_terms(
+    entity_id: int,
+    entity_type: str,
+) -> Dict[str, Any]:
+    """Get the glossary terms linked to a catalog entity (e.g. is this column linked to any terms?).
+
+    Args:
+        entity_id: ID of the catalog entity
+        entity_type: Entity type — SOURCE, SCHEMA, TABLE, or COLUMN
+    """
+    normalized_type, err = _validate_glossary_entity_type(entity_type)
+    if err:
+        return err
+
+    client = get_api_client()
+
+    try:
+        result = await client.fetch_glossary_terms_for_entities(
+            entity_refs=[{"entityType": normalized_type, "entityId": entity_id}],
+        )
+        if isinstance(result, dict) and result.get("error"):
+            return {
+                "error": f"API error (status {result.get('status_code', 'unknown')}): {result.get('message', 'Unknown error')}",
+            }
+
+        entities = result.get("entities", [])
+        terms = [_format_glossary_term(t) for t in (entities[0].get("terms", []) if entities else [])]
+
+        return {
+            "entity_id": entity_id,
+            "entity_type": normalized_type,
+            "total_returned": len(terms),
+            "terms": terms,
+        }
+
+    except Exception as e:
+        return {"error": True, "message": f"Error getting glossary terms for entity: {str(e)}"}
+
+
 @mcp.tool()
 async def list_data_classes(
     search: Optional[str] = None,

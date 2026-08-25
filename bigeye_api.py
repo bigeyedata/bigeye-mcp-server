@@ -119,7 +119,11 @@ class BigeyeAPIClient:
                 elif method == "PUT":
                     response = await client.put(url, headers=headers, json=json_data or params)
                 elif method == "DELETE":
-                    response = await client.delete(url, headers=headers, params=params)
+                    # httpx's .delete() has no json= parameter, so a DELETE with a body
+                    # (e.g. unlink_glossary_term_entities) must go through .request().
+                    response = await client.request(
+                        "DELETE", url, headers=headers, params=params, json=json_data
+                    )
                 else:
                     raise ValueError(f"Unsupported method: {method}")
                 
@@ -2036,6 +2040,249 @@ class BigeyeAPIClient:
         """
         return await self.make_request(
             f"/api/v1/tags/{entity_type}/{entity_id}",
+        )
+
+    async def list_glossary_terms(
+        self,
+        search: Optional[str] = None,
+        statuses: Optional[List[str]] = None,
+        owner_ids: Optional[List[int]] = None,
+        page_size: int = 50,
+        page_cursor: Optional[str] = None,
+        sort_field: Optional[str] = None,
+        sort_direction: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """List/search glossary terms via POST /api/v1/glossary-terms/fetch.
+
+        This is a POST despite being a read, matching GlossaryTermResource.fetch.
+        Workspace is resolved from the x-bigeye-workspace-id header, not the body.
+
+        Args:
+            search: Optional search string matched against term name + synonyms
+            statuses: Optional list of GlossaryTermStatus enum names to filter by
+            owner_ids: Optional list of owner user IDs to filter by
+            page_size: Number of terms per page (default 50)
+            page_cursor: Cursor for pagination
+            sort_field: GlossaryTermSortField enum name (default GLOSSARY_TERM_SORT_FIELD_NAME)
+            sort_direction: SortDirection enum name (default ascending)
+        """
+        payload: Dict[str, Any] = {"pageSize": page_size}
+        if search:
+            payload["search"] = search
+        if statuses:
+            payload["statuses"] = statuses
+        if owner_ids:
+            payload["ownerIds"] = owner_ids
+        if page_cursor:
+            payload["pageCursor"] = page_cursor
+        if sort_field:
+            payload["sortField"] = sort_field
+        if sort_direction:
+            payload["sortDirection"] = sort_direction
+
+        return await self.make_request(
+            "/api/v1/glossary-terms/fetch",
+            method="POST",
+            json_data=payload,
+        )
+
+    async def get_glossary_term(self, term_id: int) -> Dict[str, Any]:
+        """Get a single glossary term via GET /api/v1/glossary-terms/{id}.
+
+        Args:
+            term_id: ID of the glossary term
+        """
+        return await self.make_request(f"/api/v1/glossary-terms/{term_id}")
+
+    async def create_glossary_term(
+        self,
+        name: str,
+        description: Optional[str] = None,
+        synonyms: Optional[List[str]] = None,
+        examples: Optional[str] = None,
+        status: Optional[str] = None,
+        owner_id: Optional[int] = None,
+        steward_id: Optional[int] = None,
+    ) -> Dict[str, Any]:
+        """Create a glossary term via POST /api/v1/glossary-terms.
+
+        Args:
+            name: Term name, unique per workspace (case-insensitive, among non-deleted terms)
+            description: Optional markdown description
+            synonyms: Optional list of synonym strings
+            examples: Optional free-text examples
+            status: Optional GlossaryTermStatus enum name (defaults to GLOSSARY_TERM_STATUS_DRAFT)
+            owner_id: Optional owner user ID. Omit to default to the creating user; pass 0 for no owner.
+            steward_id: Optional steward user ID
+        """
+        payload: Dict[str, Any] = {
+            "workspaceId": self.workspace_id,
+            "name": name,
+        }
+        if description is not None:
+            payload["description"] = description
+        if synonyms is not None:
+            payload["synonyms"] = synonyms
+        if examples is not None:
+            payload["examples"] = examples
+        if status:
+            payload["status"] = status
+        if owner_id is not None:
+            payload["owner"] = {"id": owner_id}
+        if steward_id is not None:
+            payload["steward"] = {"id": steward_id}
+
+        return await self.make_request(
+            "/api/v1/glossary-terms",
+            method="POST",
+            json_data=payload,
+        )
+
+    async def update_glossary_term(
+        self,
+        term_id: int,
+        name: Optional[str] = None,
+        description: Optional[str] = None,
+        synonyms: Optional[List[str]] = None,
+        examples: Optional[str] = None,
+        status: Optional[str] = None,
+        owner_id: Optional[int] = None,
+        steward_id: Optional[int] = None,
+    ) -> Dict[str, Any]:
+        """Update a glossary term via PUT /api/v1/glossary-terms/{id}.
+
+        Scalar fields are a full replacement, not a patch -- any field passed here
+        overwrites the existing value entirely (synonyms is a full list replacement).
+        Fields omitted (left None) are not sent, so the server leaves them unchanged.
+
+        Args:
+            term_id: ID of the term to update
+            name: New name (optional)
+            description: New markdown description (optional)
+            synonyms: New full list of synonyms, replacing the existing list (optional)
+            examples: New examples text (optional)
+            status: New GlossaryTermStatus enum name (optional)
+            owner_id: New owner user ID; pass 0 to clear (optional)
+            steward_id: New steward user ID; pass 0 to clear (optional)
+        """
+        payload: Dict[str, Any] = {}
+        if name is not None:
+            payload["name"] = name
+        if description is not None:
+            payload["description"] = description
+        if synonyms is not None:
+            payload["synonyms"] = synonyms
+        if examples is not None:
+            payload["examples"] = examples
+        if status:
+            payload["status"] = status
+        if owner_id is not None:
+            payload["owner"] = {"id": owner_id}
+        if steward_id is not None:
+            payload["steward"] = {"id": steward_id}
+
+        return await self.make_request(
+            f"/api/v1/glossary-terms/{term_id}",
+            method="PUT",
+            json_data=payload,
+        )
+
+    async def delete_glossary_term(self, term_id: int) -> Dict[str, Any]:
+        """Soft-delete a glossary term via DELETE /api/v1/glossary-terms/{id}.
+
+        Also soft-deletes the term's entity links in the same transaction.
+
+        Args:
+            term_id: ID of the term to delete
+        """
+        return await self.make_request(
+            f"/api/v1/glossary-terms/{term_id}",
+            method="DELETE",
+        )
+
+    async def link_glossary_term_entities(
+        self,
+        term_id: int,
+        entity_refs: List[Dict[str, Any]],
+    ) -> Dict[str, Any]:
+        """Link entities to a glossary term via POST /api/v1/glossary-terms/{id}/links.
+
+        Upserts -- re-linking an already-linked pair is a no-op. Returns a per-ref
+        result so partial failures (e.g. a nonexistent entity) are reportable.
+
+        Args:
+            term_id: ID of the glossary term
+            entity_refs: List of {"entityType": "DATA_NODE_TYPE_...", "entityId": int} refs.
+                Allowed entityType values: DATA_NODE_TYPE_SOURCE, DATA_NODE_TYPE_SCHEMA,
+                DATA_NODE_TYPE_TABLE, DATA_NODE_TYPE_COLUMN.
+        """
+        return await self.make_request(
+            f"/api/v1/glossary-terms/{term_id}/links",
+            method="POST",
+            json_data={"refs": entity_refs},
+        )
+
+    async def unlink_glossary_term_entities(
+        self,
+        term_id: int,
+        entity_refs: List[Dict[str, Any]],
+    ) -> Dict[str, Any]:
+        """Unlink entities from a glossary term via DELETE /api/v1/glossary-terms/{id}/links.
+
+        Args:
+            term_id: ID of the glossary term
+            entity_refs: List of {"entityType": "DATA_NODE_TYPE_...", "entityId": int} refs
+        """
+        return await self.make_request(
+            f"/api/v1/glossary-terms/{term_id}/links",
+            method="DELETE",
+            json_data={"refs": entity_refs},
+        )
+
+    async def get_glossary_term_links(
+        self,
+        term_id: int,
+        search: Optional[str] = None,
+        page_cursor: Optional[str] = None,
+        page_size: Optional[int] = None,
+    ) -> Dict[str, Any]:
+        """Get entities linked to a glossary term via GET /api/v1/glossary-terms/{id}/links.
+
+        Args:
+            term_id: ID of the glossary term
+            search: Optional search string to filter linked entities
+            page_cursor: Cursor for pagination
+            page_size: Number of links per page
+        """
+        params: Dict[str, Any] = {}
+        if search:
+            params["search"] = search
+        if page_cursor:
+            params["pageCursor"] = page_cursor
+        if page_size:
+            params["pageSize"] = page_size
+
+        return await self.make_request(
+            f"/api/v1/glossary-terms/{term_id}/links",
+            params=params,
+        )
+
+    async def fetch_glossary_terms_for_entities(
+        self,
+        entity_refs: List[Dict[str, Any]],
+    ) -> Dict[str, Any]:
+        """Get glossary terms linked to one or more entities via POST /api/v1/glossary-terms/links/fetch.
+
+        Batched asset-side reverse lookup: given entity refs, returns the terms linked
+        to each one. Workspace is resolved from the header when not set on refs.
+
+        Args:
+            entity_refs: List of {"entityType": "DATA_NODE_TYPE_...", "entityId": int} refs
+        """
+        return await self.make_request(
+            "/api/v1/glossary-terms/links/fetch",
+            method="POST",
+            json_data={"refs": entity_refs},
         )
 
     async def search_lineage_v2(

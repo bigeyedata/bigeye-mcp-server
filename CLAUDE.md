@@ -31,6 +31,7 @@
 - Search endpoints require exact matches with underscores (e.g. `sales_dashboard` not `sales dashboard`)
 - The Bigeye API returns `issue` (singular) as the response key, not `issues` (plural)
 - Issue fields like `tableName`/`schemaName` are nested in `metricMetadata`, not at top level
+- Glossary term listing is `POST /api/v1/glossary-terms/fetch`, not a `GET` with query params, matching `GlossaryTermResource.fetch`. Link/unlink/fetch-for-entities request bodies wrap the ref list under the key `refs`, not `entityRefs`. `PUT /api/v1/glossary-terms/{id}` is a full field replacement, not a patch — omitted fields are left alone, but a provided `synonyms` list replaces the whole list, so adding one synonym requires fetching the term first and sending back the full merged list.
 
 ## Roadmap
 
