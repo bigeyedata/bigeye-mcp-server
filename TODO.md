@@ -110,4 +110,3 @@
 - `resource://sla/definitions` — SLA definitions
 - `resource://lineage/graph/{node_id}` — Lineage graph for a node
 - `resource://notifications/rules` — Notification rules
-- `resource://glossary/terms` — Business glossary terms
