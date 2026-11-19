@@ -5,10 +5,13 @@ This module provides functions to interact with the Bigeye API.
 """
 
 import httpx
+import os
 import sys
 from typing import Dict, Any, Optional, List
 
 from telemetry import SERVER_VERSION, trace_propagation_headers
+
+DEBUG = os.environ.get("BIGEYE_DEBUG", "").lower() in ("true", "1", "yes")
 
 class BigeyeAPIClient:
     """Client for interacting with the Bigeye API."""
@@ -88,9 +91,10 @@ class BigeyeAPIClient:
         print(f"\n[BIGEYE API VERBOSE] === REQUEST DETAILS ===", file=sys.stderr)
         print(f"[BIGEYE API VERBOSE] Method: {method}", file=sys.stderr)
         print(f"[BIGEYE API VERBOSE] URL: {url}", file=sys.stderr)
-        print(f"[BIGEYE API VERBOSE] Headers: {headers}", file=sys.stderr)
+        print(f"[BIGEYE API VERBOSE] Headers: { {k: v for k, v in headers.items() if k.lower() != 'authorization'} }", file=sys.stderr)
         print(f"[BIGEYE API VERBOSE] Query params: {params}", file=sys.stderr)
-        print(f"[BIGEYE API VERBOSE] JSON body: {json_data}", file=sys.stderr)
+        if DEBUG:
+            print(f"[BIGEYE API VERBOSE] JSON body: {json_data}", file=sys.stderr)
         
         # If we have params, construct the full URL with query string
         if params:
@@ -128,11 +132,11 @@ class BigeyeAPIClient:
                     raise ValueError(f"Unsupported method: {method}")
                 
                 print(f"[BIGEYE API VERBOSE] Response status: {response.status_code}", file=sys.stderr)
-                print(f"[BIGEYE API VERBOSE] Response headers: {dict(response.headers)}", file=sys.stderr)
                 
                 # Always log the raw response text for debugging
                 raw_response = response.text
-                print(f"[BIGEYE API VERBOSE] Raw response body: {raw_response[:1000]}..." if len(raw_response) > 1000 else f"[BIGEYE API VERBOSE] Raw response body: {raw_response}", file=sys.stderr)
+                if DEBUG:
+                    print(f"[BIGEYE API VERBOSE] Raw response body: {raw_response[:1000]}..." if len(raw_response) > 1000 else f"[BIGEYE API VERBOSE] Raw response body: {raw_response}", file=sys.stderr)
                 
                 try:
                     if response.status_code >= 400:
@@ -142,12 +146,14 @@ class BigeyeAPIClient:
                             "status_code": response.status_code,
                             "message": response.text
                         }
-                        print(f"[BIGEYE API VERBOSE] Returning error: {error_response}", file=sys.stderr)
+                        if DEBUG:
+                            print(f"[BIGEYE API VERBOSE] Returning error: {error_response}", file=sys.stderr)
                         return error_response
                     
                     result = response.json()
                     # Print first few items of response for debugging
-                    print(f"[BIGEYE API DEBUG] Response preview: {str(result)[:200]}...", file=sys.stderr)
+                    if DEBUG:
+                        print(f"[BIGEYE API DEBUG] Response preview: {str(result)[:200]}...", file=sys.stderr)
                     return result
                 except Exception as e:
                     # Return text if not JSON
