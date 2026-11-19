@@ -19,7 +19,7 @@ from datetime import datetime, timedelta, timezone
 from auth import BigeyeAuthClient
 from bigeye_api import BigeyeAPIClient
 from config import config
-from request_credentials import current_credentials, normalize_url
+from request_credentials import DisallowedUrlError, current_credentials, normalize_url
 from lineage_tracker import AgentLineageTracker
 from telemetry import init_telemetry, instrument_tools
 
@@ -5140,6 +5140,12 @@ async def health_check(request):
     return PlainTextResponse("ok")
 
 
+async def _reject(scope, receive, send, status, message):
+    from starlette.responses import JSONResponse
+
+    await JSONResponse({"error": message}, status_code=status)(scope, receive, send)
+
+
 class PerRequestCredentialsMiddleware:
     def __init__(self, app):
         self.app = app
@@ -5154,15 +5160,23 @@ class PerRequestCredentialsMiddleware:
         }
         token = None
         auth = headers.get("authorization", "").strip()
-        if auth:
-            parts = auth.split(None, 1)
-            api_key = (parts[1] if len(parts) == 2 else parts[0]).strip()
+        parts = auth.split(None, 1)
+        api_key = (parts[1] if len(parts) == 2 else parts[0]).strip() if parts else ""
+        if scope.get("path", "").startswith("/mcp") and not api_key:
+            await _reject(scope, receive, send, 401, "missing Authorization header")
+            return
+        if api_key:
+            try:
+                url = normalize_url(headers.get("x-bigeye-url", ""))
+            except DisallowedUrlError:
+                await _reject(scope, receive, send, 400, "x-bigeye-url is not an allowed Bigeye host")
+                return
             ws_raw = headers.get("x-bigeye-workspace-id", "").strip()
             token = current_credentials.set(
                 {
                     "api_key": api_key,
                     "workspace_id": int(ws_raw) if ws_raw.isdigit() else None,
-                    "url": normalize_url(headers.get("x-bigeye-url", "")),
+                    "url": url,
                 }
             )
         try:
